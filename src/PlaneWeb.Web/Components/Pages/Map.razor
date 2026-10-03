@@ -103,8 +103,8 @@
             present.Add(t.Hex);
             var full = !sent.TryGetValue(t.Hex, out var prev) || prev.Rev != t.Revision;
             var pts = full ? t.Points : t.Points.Where(p => p.T > prev.LastT).ToList();
-            if (pts.Count > 0)
-                trails.Add(new { hex = t.Hex, full, wall = onWall.Contains(t.Hex),
+            // Always send the entry, even with no new points, so metadata like the wall highlight stays current.
+            trails.Add(new { hex = t.Hex, full, wall = onWall.Contains(t.Hex),
                     pts = pts.Select(p => new double?[] { Math.Round(p.T, 1), p.Lat, p.Lon, p.AltFt }) });
             sent[t.Hex] = (t.Revision, t.Points[^1].T);
         }

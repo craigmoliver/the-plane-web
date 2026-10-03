@@ -69,7 +69,9 @@ public sealed class AircraftInfoService(HttpClient adsbdb, HttpClient planespott
 
     private async Task<AircraftInfo> FetchAsync(string hex, string? registration)
     {
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20)); // shared fetch: not tied to one caller
+        // Shared fetch, so not tied to one caller's token. Each upstream gets its own deadline,
+        // so a slow registry lookup can't use up the photo lookup's time.
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         var info = new AircraftInfo { Hex = hex, Registration = registration };
         try
         {
@@ -79,16 +81,17 @@ public sealed class AircraftInfoService(HttpClient adsbdb, HttpClient planespott
         catch (Exception ex) when (ex is not OperationCanceledException || cts.IsCancellationRequested)
         { log.LogDebug(ex, "adsbdb lookup failed for {Hex}", hex); }
 
+        using var photoCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         try
         {
             var path = info.Registration is { Length: > 0 } reg
                 ? $"pub/photos/reg/{Uri.EscapeDataString(reg)}" : $"pub/photos/hex/{hex}";
-            var photo = ParsePlanespotters(await planespotters.GetStringAsync(path, cts.Token));
+            var photo = ParsePlanespotters(await planespotters.GetStringAsync(path, photoCts.Token));
             if (photo is null && info.Registration is not null)
-                photo = ParsePlanespotters(await planespotters.GetStringAsync($"pub/photos/hex/{hex}", cts.Token));
+                photo = ParsePlanespotters(await planespotters.GetStringAsync($"pub/photos/hex/{hex}", photoCts.Token));
             info = info with { Photo = photo, Found = info.Found || photo is not null };
         }
-        catch (Exception ex) when (ex is not OperationCanceledException || cts.IsCancellationRequested)
+        catch (Exception ex) when (ex is not OperationCanceledException || photoCts.IsCancellationRequested)
         { log.LogDebug(ex, "planespotters lookup failed for {Hex}", hex); }
         return info;
     }

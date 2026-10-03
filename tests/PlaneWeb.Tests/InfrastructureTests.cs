@@ -61,6 +61,14 @@ public class ParsingTests
         Assert.Equal("Seattle", r.Destination.City);
         Assert.Null(VrsRouteLookup.Parse("""{"callsign":"X","_airports":[]}"""));
     }
+
+    [Theory]
+    [InlineData("ASA1", true)]
+    [InlineData("N12345", true)]
+    [InlineData("AB", false)]
+    [InlineData("TOOLONG123", false)]
+    [InlineData("../x", false)]
+    public void ValidatesCallsigns(string cs, bool ok) => Assert.Equal(ok, VrsRouteLookup.IsValidCallsign(cs));
 }
 
 public class FlightProcessorTests

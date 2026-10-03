@@ -14,12 +14,16 @@ public sealed class VrsRouteLookup(HttpClient http, ILogger<VrsRouteLookup> log)
 {
     private static readonly TimeSpan HitTtl = TimeSpan.FromHours(6);
     private static readonly TimeSpan MissTtl = TimeSpan.FromMinutes(30);
+    private const int MaxEntries = 5000;
     private readonly ConcurrentDictionary<string, (FlightRoute? Route, DateTimeOffset Expires)> _cache = new();
+
+    /// <summary>Callsigns are 3–8 letters/digits (ICAO allows up to 7; a little slack for feeds).</summary>
+    public static bool IsValidCallsign(string cs) => cs.Length is >= 3 and <= 8 && cs.All(char.IsAsciiLetterOrDigit);
 
     public async Task<FlightRoute?> GetRouteAsync(string callsign, CancellationToken ct)
     {
         callsign = callsign.Trim().ToUpperInvariant();
-        if (callsign.Length < 3) return null;
+        if (!IsValidCallsign(callsign)) return null;
         if (_cache.TryGetValue(callsign, out var c) && c.Expires > DateTimeOffset.UtcNow) return c.Route;
 
         FlightRoute? route = null;
@@ -38,6 +42,14 @@ public sealed class VrsRouteLookup(HttpClient http, ILogger<VrsRouteLookup> log)
             return c.Route;
         }
 
+        if (_cache.Count >= MaxEntries)
+        {
+            var now = DateTimeOffset.UtcNow;
+            foreach (var k in _cache.Where(kv => kv.Value.Expires <= now).Select(kv => kv.Key).ToList()) _cache.TryRemove(k, out _);
+            if (_cache.Count >= MaxEntries)
+                foreach (var k in _cache.OrderBy(kv => kv.Value.Expires).Take(_cache.Count - MaxEntries / 2).Select(kv => kv.Key).ToList())
+                    _cache.TryRemove(k, out _);
+        }
         _cache[callsign] = (route, DateTimeOffset.UtcNow + (route is null ? MissTtl : HitTtl));
         return route;
     }

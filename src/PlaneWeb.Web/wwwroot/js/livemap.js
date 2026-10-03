@@ -11,7 +11,7 @@ window.planeWebLiveMap = (() => {
     const planes = new Map(); // hex -> { marker, el, svg, label, data, recv }
     const trails = new Map(); // hex -> { pts: [[t,lat,lon,alt]], wall, group }
     const infoCache = new Map(); // in-flight lookups only: key -> Promise<{details, route}>
-    let panel = null, selected = null, autoLabels = false;
+    let panel = null, selected = null, selectedKey = null, autoLabels = false;
 
     const store = {
         get: k => { try { return localStorage.getItem(k); } catch { return null; } },
@@ -300,7 +300,7 @@ window.planeWebLiveMap = (() => {
         for (const id of [prev, hex]) { const t = id && trails.get(id); if (t) drawTrail(t); }
         if (!panel) return;
         panel.root.hidden = !hex;
-        if (!hex) return;
+        if (!hex) { selectedKey = null; return; }
 
         const a = planes.get(hex)?.data;
         panel.root.scrollTop = 0;
@@ -316,12 +316,14 @@ window.planeWebLiveMap = (() => {
         if (a?.reg) params.set('reg', a.reg);
         if (a?.callsign) params.set('callsign', a.callsign);
         const key = `${hex}|${params}`;
+        selectedKey = key;
         if (!infoCache.has(key))
             infoCache.set(key, fetch(`/api/aircraft/${encodeURIComponent(hex)}?${params}`)
                 .then(r => r.ok ? r.json() : null).catch(() => null));
         infoCache.get(key).then(info => {
             infoCache.delete(key); // only coalesces in-flight requests; HTTP/server caches control expiry
-            if (selected === hex) renderInfo(hex, a, info);
+            // Ignore late responses for an earlier selection or a different request for the same aircraft.
+            if (selected === hex && selectedKey === key) renderInfo(hex, a, info);
         });
     }
 

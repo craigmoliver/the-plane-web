@@ -54,12 +54,17 @@ app.MapGet("/logos/{icao}.png", async (string icao, AirlineLogoService logos, Ht
     return Results.File(path, "image/png");
 });
 app.MapGet("/api/aircraft/{hex}", async (string hex, string? reg, string? callsign,
-    AircraftInfoService info, PlaneWeb.Core.IRouteLookup routes, HttpContext ctx, CancellationToken ct) =>
+    AircraftInfoService info, PlaneWeb.Core.IRouteLookup routes, PlaneWeb.Infrastructure.Services.FlightStateStore state,
+    HttpContext ctx, CancellationToken ct) =>
 {
     var details = await info.GetAsync(hex, string.IsNullOrWhiteSpace(reg) ? null : reg.Trim(), ct);
     if (details is null) return Results.BadRequest();
     PlaneWeb.Core.FlightRoute? route = null;
-    if (!string.IsNullOrWhiteSpace(callsign))
+    // Only look up routes for a callsign the aircraft is actually broadcasting right now,
+    // so clients can't drive arbitrary outbound lookups or grow the route cache.
+    var live = state.Current.MapAircraft.FirstOrDefault(a => string.Equals(a.Hex, hex, StringComparison.OrdinalIgnoreCase));
+    if (!string.IsNullOrWhiteSpace(callsign) && live?.Callsign is { } liveCs &&
+        string.Equals(liveCs, callsign.Trim(), StringComparison.OrdinalIgnoreCase))
         try { route = await routes.GetRouteAsync(callsign.Trim(), ct); } catch (HttpRequestException) { }
     ctx.Response.Headers.CacheControl = "private, max-age=300";
     return Results.Ok(new
