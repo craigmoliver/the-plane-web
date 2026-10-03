@@ -1,0 +1,12 @@
+**/bin/
+**/obj/
+**/*.db
+**/*.db-*
+.git/
+.vs/
+.vscode/
+.idea/
+tests/
+Dockerfile
+docker-compose.yml
+README.md
