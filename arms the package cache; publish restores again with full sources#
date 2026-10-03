@@ -1,1 +1,0 @@
-RUN dotnet restore src/FlightWall.Web/FlightWall.Web.csproj  

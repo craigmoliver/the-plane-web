@@ -6,7 +6,9 @@ COPY FlightWall.sln ./
 COPY src/FlightWall.Core/*.csproj src/FlightWall.Core/
 COPY src/FlightWall.Infrastructure/*.csproj src/FlightWall.Infrastructure/
 COPY src/FlightWall.Web/*.csproj src/FlightWall.Web/
-RUN dotnet restore src/FlightWall.Web/FlightWall.Web.csproj  
+# Restore against project files first for layer caching; publish below restores again with full sources
+# so framework static assets (e.g. blazor.web.js) are included. Do not add --no-restore to publish.
+RUN dotnet restore src/FlightWall.Web/FlightWall.Web.csproj
 
 COPY src/ src/
 RUN dotnet publish src/FlightWall.Web/FlightWall.Web.csproj -c Release -o /app /p:UseAppHost=false
