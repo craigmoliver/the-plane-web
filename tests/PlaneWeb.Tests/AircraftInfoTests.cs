@@ -98,6 +98,20 @@ public class AircraftInfoTests
         Assert.Equal(2, db.Calls); // retried after the 30-minute failure window, not 12 hours
     }
 
+    [Fact]
+    public async Task RegistrationHint_IsPartOfCacheKey()
+    {
+        var db = new Failing();
+        var ps = new Handler(Spotters);
+        var svc = new AircraftInfoService(
+            new HttpClient(db) { BaseAddress = new Uri("https://db/") },
+            new HttpClient(ps) { BaseAddress = new Uri("https://ps/") },
+            TimeProvider.System, Microsoft.Extensions.Logging.Abstractions.NullLogger<AircraftInfoService>.Instance);
+        Assert.Null((await svc.GetAsync("abc123", null, default))!.Registration);
+        Assert.Equal("N1", (await svc.GetAsync("abc123", "n1", default))!.Registration);
+        Assert.Contains("/pub/photos/reg/N1", ps.Paths);
+    }
+
     private sealed class ManualTime(DateTimeOffset start) : TimeProvider
     {
         public DateTimeOffset Now = start;

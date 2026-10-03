@@ -25,6 +25,9 @@ public sealed class TraceBackfillService(
     private readonly Dictionary<string, DateTimeOffset> _attempted = new(StringComparer.OrdinalIgnoreCase);
     private readonly Lock _lock = new();
 
+    /// <summary>Mirrors the TraceBackfill setting; when false, queued lookups are skipped instead of requested.</summary>
+    public bool Enabled { get; set; } = true;
+
     /// <summary>Queues a lookup unless this hex was tried recently. Returns true if queued.</summary>
     public bool Enqueue(string hex)
     {
@@ -47,6 +50,12 @@ public sealed class TraceBackfillService(
         var gap = TimeSpan.FromMilliseconds(Math.Max(250, options.Value.TraceMinIntervalMs));
         await foreach (var hex in _queue.Reader.ReadAllAsync(stoppingToken))
         {
+            if (!Enabled)
+            {
+                // Forget the attempt so the aircraft is looked up if history is turned back on.
+                lock (_lock) _attempted.Remove(hex);
+                continue;
+            }
             try
             {
                 if (trails.Get(hex) is not null) // skip if the aircraft already left
@@ -63,7 +72,7 @@ public sealed class TraceBackfillService(
                 log.LogInformation("adsb.lol rate-limited history lookups; pausing {Seconds}s", RateLimitPause.TotalSeconds);
                 lock (_lock) _attempted.Remove(hex);
                 await Task.Delay(RateLimitPause, time, stoppingToken);
-                Enqueue(hex);
+                if (Enabled) Enqueue(hex);
                 continue;
             }
             catch (Exception ex)

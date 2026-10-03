@@ -117,6 +117,8 @@
         {
             now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
             windowSec = s.TrailMinutes * 60,
+            // Time of the last successful poll: failed polls repeat the old snapshot and must not reset animation.
+            asOf = snap.UpdatedAt == DateTimeOffset.MinValue ? 0 : snap.UpdatedAt.ToUnixTimeMilliseconds() / 1000.0,
             present, trails, aircraft,
         }))
             sent.Clear(); // not delivered: resend full trails next time

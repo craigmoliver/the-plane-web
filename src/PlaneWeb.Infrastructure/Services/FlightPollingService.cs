@@ -44,6 +44,7 @@ public sealed class FlightPollingService(
     {
         var snap = await PollAsync(s, ct);
         var now = time.GetUtcNow();
+        backfill.Enabled = s.TraceBackfill;
         trails.Window = TimeSpan.FromMinutes(Math.Clamp(s.TrailMinutes, 1, WallSettings.MaxTrailMinutes));
         foreach (var a in snap.MapAircraft)
         {

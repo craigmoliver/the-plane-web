@@ -191,4 +191,23 @@ public class TrailRecordingTests
         Assert.False(backfill.Enqueue("overflow"));   // queue full: not recorded as attempted
         Assert.False(backfill.Enqueue("h0"));         // already queued
     }
+
+    [Fact]
+    public async Task DisabledBackfill_SkipsQueuedLookups()
+    {
+        var opt = Microsoft.Extensions.Options.Options.Create(new PlaneWebOptions { TraceMinIntervalMs = 250 });
+        var trails = new TrailStore();
+        trails.Record(new Aircraft { Hex = "abc123", Lat = 34, Lon = -84 }, DateTimeOffset.UtcNow);
+        var h = new TraceParserTests.Capture("""{"timestamp": 0, "trace": []}""");
+        var backfill = new TraceBackfillService(
+            new AdsbLolTraceClient(new HttpClient(h) { BaseAddress = new Uri("https://adsb.lol/") }),
+            trails, opt, TimeProvider.System,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<TraceBackfillService>.Instance) { Enabled = false };
+        Assert.True(backfill.Enqueue("abc123"));
+        await backfill.StartAsync(default);
+        await Task.Delay(300);
+        await backfill.StopAsync(default);
+        Assert.Equal(0, h.Calls);
+        Assert.True(backfill.Enqueue("abc123")); // attempt forgotten, so it can run once re-enabled
+    }
 }

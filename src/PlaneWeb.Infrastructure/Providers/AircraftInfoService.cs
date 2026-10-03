@@ -37,8 +37,11 @@ public sealed class AircraftInfoService(HttpClient adsbdb, HttpClient planespott
     {
         hex = hex.Trim().ToLowerInvariant();
         if (hex.Length is < 2 or > 8 || !hex.All(Uri.IsHexDigit)) return null;
+        registration = string.IsNullOrWhiteSpace(registration) ? null : registration.Trim().ToUpperInvariant();
+        // The registration hint changes the result (fallback registration, photo lookup), so it is part of the key.
+        var key = $"{hex}|{registration}";
         var now = time.GetUtcNow();
-        if (_cache.TryGetValue(hex, out var e) && e.Expires > now) return await e.Value.Value.WaitAsync(ct);
+        if (_cache.TryGetValue(key, out var e) && e.Expires > now) return await e.Value.Value.WaitAsync(ct);
 
         if (_cache.Count >= MaxEntries)
         {
@@ -49,14 +52,19 @@ public sealed class AircraftInfoService(HttpClient adsbdb, HttpClient planespott
                     _cache.TryRemove(k, out _);
         }
 
-        var lazy = new Lazy<Task<AircraftInfo>>(() => FetchAsync(hex, registration));
-        var entry = _cache.AddOrUpdate(hex, _ => (now + HitTtl, lazy),
+        Lazy<Task<AircraftInfo>>? lazy = null;
+        lazy = new Lazy<Task<AircraftInfo>>(async () =>
+        {
+            var info = await FetchAsync(hex, registration);
+            // Finalize the lifetime when the shared fetch completes, regardless of which callers are still waiting:
+            // shorten it when nothing useful came back, and only if this entry hasn't been replaced.
+            if (!info.Found && _cache.TryGetValue(key, out var cur) && ReferenceEquals(cur.Value, lazy))
+                _cache.TryUpdate(key, (time.GetUtcNow() + MissTtl, lazy!), cur);
+            return info;
+        });
+        var entry = _cache.AddOrUpdate(key, _ => (now + HitTtl, lazy),
             (_, old) => old.Expires > now ? old : (now + HitTtl, lazy));
-        var info = await entry.Value.Value.WaitAsync(ct);
-        // Shorten the cache time when nothing useful came back, so it is retried later.
-        if (!info.Found && ReferenceEquals(entry.Value, lazy))
-            _cache[hex] = (now + MissTtl, lazy);
-        return info;
+        return await entry.Value.Value.WaitAsync(ct);
     }
 
     private async Task<AircraftInfo> FetchAsync(string hex, string? registration)

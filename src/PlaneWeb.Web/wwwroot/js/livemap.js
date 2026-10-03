@@ -10,7 +10,7 @@ window.planeWebLiveMap = (() => {
     let clockOffset = 0, windowSec = 900;
     const planes = new Map(); // hex -> { marker, el, svg, label, data, recv }
     const trails = new Map(); // hex -> { pts: [[t,lat,lon,alt]], wall, group }
-    const infoCache = new Map(); // hex -> Promise<{details, route}>
+    const infoCache = new Map(); // in-flight lookups only: key -> Promise<{details, route}>
     let panel = null, selected = null, autoLabels = false;
 
     const store = {
@@ -167,7 +167,7 @@ window.planeWebLiveMap = (() => {
         const live = new Set();
         for (const a of p.aircraft) {
             live.add(a.hex);
-            upsertPlane(a);
+            upsertPlane(a, p.asOf || nowSec());
             const t = trails.get(a.hex);
             if (t) t.wall = a.wall;
         }
@@ -205,7 +205,7 @@ window.planeWebLiveMap = (() => {
         flush();
     }
 
-    function upsertPlane(a) {
+    function upsertPlane(a, asOf) {
         let pl = planes.get(a.hex);
         if (!pl) {
             const el = document.createElement('div');
@@ -224,7 +224,7 @@ window.planeWebLiveMap = (() => {
                 icon: L.divIcon({ html: el, className: 'fw-plane-icon', iconSize: [28, 28], iconAnchor: [14, 14] }),
                 keyboard: true, title: a.ident, alt: `Aircraft ${a.ident}`,
             }).addTo(planeLayer);
-            pl = { marker, el, svg, label, data: a, recv: nowSec() };
+            pl = { marker, el, svg, label, data: a, recv: asOf };
             marker.on('click', ev => { L.DomEvent.stopPropagation(ev); select(a.hex); });
             marker.getElement()?.addEventListener('keydown', ev => {
                 if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); ev.stopPropagation(); select(a.hex); }
@@ -232,8 +232,10 @@ window.planeWebLiveMap = (() => {
             planes.set(a.hex, pl);
         }
         pl.data = a;
-        pl.recv = nowSec();
-        pl.marker.setLatLng([a.lat, a.lon]);
+        if (pl.recv !== asOf) { // new position report: restart the glide from it
+            pl.recv = asOf;
+            pl.marker.setLatLng([a.lat, a.lon]);
+        }
         pl.label.textContent = a.ident;
         pl.marker.getElement()?.setAttribute('aria-label', `Aircraft ${a.ident}`);
         pl.el.classList.toggle('on-wall', !!a.wall);
@@ -318,7 +320,7 @@ window.planeWebLiveMap = (() => {
             infoCache.set(key, fetch(`/api/aircraft/${encodeURIComponent(hex)}?${params}`)
                 .then(r => r.ok ? r.json() : null).catch(() => null));
         infoCache.get(key).then(info => {
-            if (!info) infoCache.delete(key); // allow a retry on the next selection
+            infoCache.delete(key); // only coalesces in-flight requests; HTTP/server caches control expiry
             if (selected === hex) renderInfo(hex, a, info);
         });
     }
