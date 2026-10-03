@@ -129,3 +129,26 @@ public class ReviewRound2Tests
         Assert.Null(new WallSettings { Shape = AreaShape.Radius, PolygonJson = huge.PolygonJson }.Validate());
     }
 }
+
+public class AirlineIcaoTests
+{
+    [Theory]
+    [InlineData("ASA1", "ASA")]
+    [InlineData("ual123 ", "UAL")]
+    [InlineData("N12345", null)]
+    [InlineData("N123AB", null)]
+    [InlineData("CGABC", null)]
+    [InlineData(null, null)]
+    public void AirlineIcao(string? cs, string? expected) => Assert.Equal(expected, CallsignNormalizer.AirlineIcao(cs));
+}
+
+public class AirlineLogoRetryTests
+{
+    [Theory]
+    [InlineData(1, 30)]
+    [InlineData(2, 60)]
+    [InlineData(3, 120)]
+    [InlineData(10, 600)]
+    public void RetryDelay_BacksOffAndCaps(int failures, int seconds) =>
+        Assert.Equal(TimeSpan.FromSeconds(seconds), FlightWall.Web.Components.AirlineLogo.RetryDelay(failures));
+}

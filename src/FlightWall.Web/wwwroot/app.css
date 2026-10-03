@@ -60,7 +60,7 @@ code, .mono { font-family: ui-monospace, monospace; }
 .board { display: flex; flex-direction: column; gap: 1.2vh; }
 .board-row {
     display: grid;
-    grid-template-columns: 1.3fr 1.1fr 2fr 1.2fr 1.1fr 1.2fr;
+    grid-template-columns: 1.9fr 1.1fr 1.6fr 1.5fr 1.1fr 1.2fr;
     gap: 1.5vw; align-items: center;
     padding: .8vh 1vw;
     background: #0a0a0a;
@@ -69,6 +69,15 @@ code, .mono { font-family: ui-monospace, monospace; }
     animation: flip .5s ease-out;
 }
 .board-row > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ident-cell { display: flex; align-items: center; gap: .8vw; min-width: 0; overflow: hidden; }
+.ident-cell > .led { overflow: hidden; text-overflow: ellipsis; }
+/* Logos sit on a light chip so dark logos stay legible on the black board. */
+.airline-logo {
+    flex: none; height: clamp(1.6rem, 3vw, 3rem); width: clamp(3.2rem, 6vw, 6rem);
+    object-fit: contain; background: #f2f2f2; border-radius: 4px; padding: 2px 4px;
+}
+.airline-logo.large { height: clamp(3rem, 7vw, 7rem); width: clamp(6rem, 14vw, 14rem); padding: 4px 8px; }
+.airline-logo.empty, .airline-logo.failed { visibility: hidden; }
 .board-head { background: none; border: none; animation: none; }
 .board-head > span { font-size: clamp(.8rem, 1.3vw, 1.3rem); }
 @keyframes flip { from { transform: rotateX(80deg); opacity: 0; } to { transform: none; opacity: 1; } }

@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.DataProtection;
 using FlightWall.Infrastructure;
 using FlightWall.Infrastructure.Data;
+using FlightWall.Infrastructure.Providers;
 using FlightWall.Web.Components;
 using Microsoft.EntityFrameworkCore;
 
@@ -45,6 +46,13 @@ app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages:
 app.UseAntiforgery();
 
 app.MapHealthChecks("/healthz");
+app.MapGet("/logos/{icao}.png", async (string icao, AirlineLogoService logos, HttpContext ctx, CancellationToken ct) =>
+{
+    var path = await logos.GetLogoPathAsync(icao, ct);
+    if (path is null) return Results.NotFound();
+    ctx.Response.Headers.CacheControl = "public, max-age=604800";
+    return Results.File(path, "image/png");
+});
 app.MapStaticAssets();
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();

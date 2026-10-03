@@ -214,3 +214,90 @@ public class PollingFailureTests
         public FlightWall.Infrastructure.Data.FlightWallDbContext CreateDbContext() => new(o);
     }
 }
+
+public class AirlineLogoServiceTests
+{
+    private sealed class FakeHandler : HttpMessageHandler
+    {
+        public int Calls;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage r, CancellationToken ct)
+        {
+            Calls++;
+            return Task.FromResult(r.RequestUri!.AbsolutePath.EndsWith("ASA.png")
+                ? new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new ByteArrayContent([1, 2, 3]) }
+                : new HttpResponseMessage(System.Net.HttpStatusCode.NotFound));
+        }
+    }
+
+    [Fact]
+    public async Task CachesHitsAndMisses_AndRejectsBadCodes()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "fwlogos-" + Guid.NewGuid());
+        var h = new FakeHandler();
+        var svc = new AirlineLogoService(new HttpClient(h) { BaseAddress = new Uri("https://x/") }, dir,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<AirlineLogoService>.Instance);
+
+        var p = await svc.GetLogoPathAsync("asa", default);
+        Assert.Equal([1, 2, 3], await File.ReadAllBytesAsync(p!));
+        await svc.GetLogoPathAsync("ASA", default);
+        Assert.Null(await svc.GetLogoPathAsync("ZZZ", default));
+        Assert.Null(await svc.GetLogoPathAsync("ZZZ", default));
+        Assert.Null(await svc.GetLogoPathAsync("../x", default));
+        Assert.Equal(2, h.Calls);
+        Directory.Delete(dir, true);
+    }
+}
+
+public class AirlineLogoStampedeTests
+{
+    private sealed class SlowMiss : HttpMessageHandler
+    {
+        public int Calls;
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage r, CancellationToken ct)
+        {
+            Interlocked.Increment(ref Calls);
+            await Task.Delay(50, ct);
+            return new HttpResponseMessage(System.Net.HttpStatusCode.NotFound);
+        }
+    }
+
+    [Fact]
+    public async Task ConcurrentMisses_HitUpstreamOnce()
+    {
+        var h = new SlowMiss();
+        var svc = new AirlineLogoService(new HttpClient(h) { BaseAddress = new Uri("https://x/") },
+            Path.Combine(Path.GetTempPath(), "fwlogos-" + Guid.NewGuid()),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<AirlineLogoService>.Instance);
+
+        var results = await Task.WhenAll(Enumerable.Range(0, 10).Select(_ => svc.GetLogoPathAsync("ZZZ", default)));
+        Assert.All(results, Assert.Null);
+        Assert.Equal(1, h.Calls);
+    }
+}
+
+public class AirlineLogoTransientFailureTests
+{
+    private sealed class SlowError : HttpMessageHandler
+    {
+        public int Calls;
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage r, CancellationToken ct)
+        {
+            Interlocked.Increment(ref Calls);
+            await Task.Delay(50, ct);
+            return new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable);
+        }
+    }
+
+    [Fact]
+    public async Task ConcurrentTransientFailures_HitUpstreamOnce()
+    {
+        var h = new SlowError();
+        var svc = new AirlineLogoService(new HttpClient(h) { BaseAddress = new Uri("https://x/") },
+            Path.Combine(Path.GetTempPath(), "fwlogos-" + Guid.NewGuid()),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<AirlineLogoService>.Instance);
+
+        var results = await Task.WhenAll(Enumerable.Range(0, 10).Select(_ => svc.GetLogoPathAsync("ASA", default)));
+        Assert.All(results, Assert.Null);
+        Assert.Equal(1, h.Calls);
+    }
+}

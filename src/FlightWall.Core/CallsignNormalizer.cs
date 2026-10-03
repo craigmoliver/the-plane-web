@@ -24,6 +24,16 @@ public static partial class CallsignNormalizer
     [GeneratedRegex(@"^([A-Z0-9]{2})(\d{1,4}[A-Z]?)$")]
     private static partial Regex IataFlight();
 
+    [GeneratedRegex(@"^([A-Z]{3})\d")]
+    private static partial Regex IcaoAirlinePrefix();
+
+    /// <summary>Airline ICAO designator from an airline callsign ("ASA1" → "ASA"); null for registrations etc.</summary>
+    public static string? AirlineIcao(string? callsign)
+    {
+        var m = IcaoAirlinePrefix().Match((callsign ?? "").Trim().ToUpperInvariant());
+        return m.Success ? m.Groups[1].Value : null;
+    }
+
     public static string Normalize(string input)
     {
         var s = new string((input ?? "").Where(char.IsLetterOrDigit).ToArray()).ToUpperInvariant();

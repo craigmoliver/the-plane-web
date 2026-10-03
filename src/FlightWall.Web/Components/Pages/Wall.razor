@@ -35,7 +35,7 @@
                 @foreach (var f in page)
                 {
                     <div class="board-row" @key="f.Aircraft.Hex">
-                        <span class="led amber big">@Fmt.Ident(f.Aircraft)</span>
+                        <span class="ident-cell"><AirlineLogo Callsign="@f.Aircraft.Callsign" /><span class="led amber big">@Fmt.Ident(f.Aircraft)</span></span>
                         <span class="led green">@(f.Route is { } r ? $"{r.Origin.Code}›{r.Destination.Code}" : "---›---")</span>
                         <span class="led white small">@Fmt.Type(f.Aircraft)</span>
                         <span class="led cyan">@Fmt.Climb(f.Aircraft.VerticalRateFpm) @Fmt.Alt(f.Aircraft, s.Units)</span>
@@ -61,7 +61,7 @@
         {
             <div class="flight-card" @key="t.Callsign">
                 <div class="fc-ident">
-                    <span class="led amber huge">@t.Callsign</span>
+                    <span class="ident-cell"><AirlineLogo Callsign="@t.Callsign" Class="large" /><span class="led amber huge">@t.Callsign</span></span>
                     @if (t.Live is { } lv)
                     {
                         <span class="led white small">@Fmt.Type(lv.Aircraft) @(lv.Aircraft.Registration is { } reg ? $"· {reg}" : "")</span>

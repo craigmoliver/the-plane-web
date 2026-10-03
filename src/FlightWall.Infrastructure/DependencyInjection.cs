@@ -36,6 +36,17 @@ public static class DependencyInjection
             c.DefaultRequestHeaders.UserAgent.ParseAdd(ua);
         }).AddStandardResilienceHandler();
 
+        services.AddHttpClient(nameof(AirlineLogoService), c =>
+        {
+            c.BaseAddress = new Uri(config["FlightWall:LogoBaseUrl"]
+                ?? "https://raw.githubusercontent.com/Jxck-S/airline-logos/main/flightaware_logos/");
+            c.DefaultRequestHeaders.UserAgent.ParseAdd(ua);
+        }).AddStandardResilienceHandler();
+        services.AddSingleton(sp => new AirlineLogoService(
+            sp.GetRequiredService<IHttpClientFactory>().CreateClient(nameof(AirlineLogoService)),
+            config["FlightWall:LogoCacheDir"] ?? Path.Combine(AppContext.BaseDirectory, "logo-cache"),
+            sp.GetRequiredService<ILogger<AirlineLogoService>>()));
+
         services.AddSingleton<IRouteLookup>(sp => sp.GetRequiredService<VrsRouteLookup>());
         services.AddSingleton<IFlightDataProvider>(sp =>
         {
