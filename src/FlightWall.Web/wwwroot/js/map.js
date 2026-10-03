@@ -11,8 +11,10 @@ window.flightWallMap = (() => {
         dotnet = ref;
         if (map) { map.remove(); }
         map = L.map(el).setView([s.lat, s.lon], 9);
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-            maxZoom: 18, attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
+        // Standard OSM tiles (no API key); darkened via CSS (.fw-dark-tiles).
+        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19, className: 'fw-dark-tiles',
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
         }).addTo(map);
 
         drawn = new L.FeatureGroup().addTo(map);

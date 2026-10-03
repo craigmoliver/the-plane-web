@@ -131,6 +131,9 @@ input[type=checkbox] { width: 1rem; height: 1rem; }
 
 /* Leaflet dark tweaks */
 .leaflet-container { background: #0b0c0d; }
+.fw-dark-tiles { filter: invert(1) hue-rotate(180deg) brightness(.9) contrast(.9) saturate(.4); }
+.row > label { min-width: 0; }
+.row input, .row select { width: 100%; min-width: 0; }
 .leaflet-draw-toolbar a { background-color: #fff; }
 
 /* ---------- Blazor ---------- */
