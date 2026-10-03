@@ -73,7 +73,7 @@ public sealed class FlightPollingService(
                 ? Geo.BoundingCircle(s.Polygon)
                 : (s.Center, s.RadiusNm);
             var raw = await provider.GetAircraftNearAsync(center, radius, ct);
-            var filtered = FlightProcessor.FilterArea(raw, s)
+            var filtered = FlightProcessor.FilterArea(raw.Aircraft, s)
                 .OrderBy(a => Geo.DistanceNm(s.Center, a.Position!.Value))
                 .Take(Math.Max(s.MaxAreaFlights * 3, 20))
                 .ToList();
@@ -84,7 +84,7 @@ public sealed class FlightPollingService(
             }));
             return new WallSnapshot
             {
-                Mode = DisplayMode.Area, UpdatedAt = now, Source = provider.Name,
+                Mode = DisplayMode.Area, UpdatedAt = now, Source = raw.Source,
                 AreaFlights = views.OrderBy(v => v.DistanceNm).ToList(),
             };
         }
@@ -92,14 +92,22 @@ public sealed class FlightPollingService(
         var tracked = await Task.WhenAll(s.TrackedFlights.Take(WallSettings.MaxTracked).Select(async req =>
         {
             var cs = CallsignNormalizer.Normalize(req);
-            var found = (await provider.GetByCallsignAsync(cs, ct))
+            var result = await provider.GetByCallsignAsync(cs, ct);
+            var found = result.Aircraft
                 .Where(a => string.Equals(a.Callsign, cs, StringComparison.OrdinalIgnoreCase))
                 .OrderByDescending(a => a.Position.HasValue)
                 .FirstOrDefault();
-            if (found is null) return new TrackedFlightView(req, cs, null);
+            if (found is null) return (View: new TrackedFlightView(req, cs, null), result.Source);
             var route = await routes.GetRouteAsync(cs, ct);
-            return new TrackedFlightView(req, cs, FlightProcessor.Enrich(found, route, s.Center, now));
+            return (View: new TrackedFlightView(req, cs, FlightProcessor.Enrich(found, route, s.Center, now)), result.Source);
         }));
-        return new WallSnapshot { Mode = DisplayMode.Flights, UpdatedAt = now, Source = provider.Name, Tracked = tracked };
+        // Report every provider that contributed to this snapshot (fallback may differ per request).
+        var sources = tracked.Select(t => t.Source).Distinct().ToList();
+        return new WallSnapshot
+        {
+            Mode = DisplayMode.Flights, UpdatedAt = now,
+            Source = sources.Count == 0 ? null : string.Join(" + ", sources),
+            Tracked = tracked.Select(t => t.View).ToList(),
+        };
     }
 }

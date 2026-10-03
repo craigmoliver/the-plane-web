@@ -32,7 +32,7 @@ code, .mono { font-family: ui-monospace, monospace; }
 .led.cyan { color: var(--cyan); text-shadow: 0 0 6px rgba(52,227,255,.6); }
 .led.white { color: #f4f4f4; text-shadow: 0 0 5px rgba(255,255,255,.45); }
 .led.red { color: var(--red); text-shadow: 0 0 6px rgba(255,59,48,.7); }
-.led.dim { color: #6b6b6b; }
+.led.dim { color: var(--dim); }
 .blink { animation: blink 1.2s steps(2, start) infinite; }
 @keyframes blink { to { visibility: hidden; } }
 

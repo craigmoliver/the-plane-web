@@ -3,9 +3,12 @@ namespace FlightWall.Core;
 public interface IFlightDataProvider
 {
     string Name { get; }
-    Task<IReadOnlyList<Aircraft>> GetAircraftNearAsync(GeoPoint center, double radiusNm, CancellationToken ct);
-    Task<IReadOnlyList<Aircraft>> GetByCallsignAsync(string callsign, CancellationToken ct);
+    Task<ProviderResult> GetAircraftNearAsync(GeoPoint center, double radiusNm, CancellationToken ct);
+    Task<ProviderResult> GetByCallsignAsync(string callsign, CancellationToken ct);
 }
+
+/// <summary>Aircraft plus the provider that actually served them (per request, never shared state).</summary>
+public sealed record ProviderResult(IReadOnlyList<Aircraft> Aircraft, string Source);
 
 public interface IRouteLookup
 {

@@ -105,3 +105,33 @@ public class FlightProcessorTests
         Assert.NotNull(v.DistanceNm);
     }
 }
+
+public class FallbackProviderTests
+{
+    private sealed class Stub(string name, bool fail) : IFlightDataProvider
+    {
+        public string Name => name;
+        public async Task<ProviderResult> GetAircraftNearAsync(GeoPoint c, double r, CancellationToken ct) => await Get(ct);
+        public async Task<ProviderResult> GetByCallsignAsync(string cs, CancellationToken ct) => await Get(ct);
+        private async Task<ProviderResult> Get(CancellationToken ct)
+        {
+            await Task.Delay(Random.Shared.Next(1, 10), ct);
+            if (fail) throw new HttpRequestException("down");
+            return new([], name);
+        }
+    }
+
+    [Fact]
+    public async Task EachConcurrentResult_ReportsItsOwnSource()
+    {
+        var log = Microsoft.Extensions.Logging.Abstractions.NullLogger<FallbackFlightDataProvider>.Instance;
+        var primaryUp = new FallbackFlightDataProvider([new Stub("a", false), new Stub("b", false)], log);
+        var primaryDown = new FallbackFlightDataProvider([new Stub("a", true), new Stub("b", false)], log);
+
+        var results = await Task.WhenAll(Enumerable.Range(0, 20).Select(i =>
+            (i % 2 == 0 ? primaryUp : primaryDown).GetByCallsignAsync("X", default)));
+
+        for (var i = 0; i < results.Length; i++)
+            Assert.Equal(i % 2 == 0 ? "a" : "b", results[i].Source);
+    }
+}
