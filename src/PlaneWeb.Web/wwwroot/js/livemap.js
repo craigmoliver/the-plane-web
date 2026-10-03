@@ -164,6 +164,7 @@ window.planeWebLiveMap = (() => {
         const present = new Set(p.present);
         for (const [hex, e] of trails) if (!present.has(hex)) { trailLayer.removeLayer(e.group); trails.delete(hex); }
 
+        const wasEmpty = planes.size === 0;
         const live = new Set();
         for (const a of p.aircraft) {
             live.add(a.hex);
@@ -172,7 +173,14 @@ window.planeWebLiveMap = (() => {
             if (t) t.wall = a.wall;
         }
         for (const [hex, pl] of planes) if (!live.has(hex)) { planeLayer.removeLayer(pl.marker); planes.delete(hex); }
-        if (selected) renderLive(planes.get(selected)?.data ?? null);
+        // Flights mode has no area to fit at startup: fit once when tracked aircraft first appear.
+        if (wasEmpty && planes.size > 0 && area && area.shape === -1) fit();
+        if (selected) {
+            const cur = planes.get(selected)?.data ?? null;
+            // Re-run the lookup if the callsign or registration changed; the key guard drops stale responses.
+            if (cur && lookupKey(cur, selected) !== selectedKey) select(selected);
+            else renderLive(cur);
+        }
 
         for (const e of trails.values()) drawTrail(e);
     }
@@ -235,7 +243,7 @@ window.planeWebLiveMap = (() => {
         pl.data = a;
         // Restart the glide only for a new position (or when it stops moving); a repeated position
         // keeps its original timestamp so the extrapolation cap still applies.
-        const moved = prev.lat !== a.lat || prev.lon !== a.lon || !a.gs || a.ground;
+        const moved = prev.lat !== a.lat || prev.lon !== a.lon || !a.gs || a.ground || a.trk == null;
         if (pl.recv !== asOf && moved) {
             pl.recv = asOf;
             pl.marker.setLatLng([a.lat, a.lon]);
@@ -316,10 +324,8 @@ window.planeWebLiveMap = (() => {
         renderLinks(a, hex, null);
         renderLive(a);
 
-        const params = new URLSearchParams();
-        if (a?.reg) params.set('reg', a.reg);
-        if (a?.callsign) params.set('callsign', a.callsign);
-        const key = `${hex}|${params}`;
+        const key = lookupKey(a, hex);
+        const params = key.slice(hex.length + 1);
         selectedKey = key;
         if (!infoCache.has(key))
             infoCache.set(key, fetch(`/api/aircraft/${encodeURIComponent(hex)}?${params}`)
@@ -329,6 +335,13 @@ window.planeWebLiveMap = (() => {
             // Ignore late responses for an earlier selection or a different request for the same aircraft.
             if (selected === hex && selectedKey === key) renderInfo(hex, a, info);
         });
+    }
+
+    function lookupKey(a, hex) {
+        const params = new URLSearchParams();
+        if (a?.reg) params.set('reg', a.reg);
+        if (a?.callsign) params.set('callsign', a.callsign);
+        return `${hex}|${params}`;
     }
 
     function renderLive(a) {

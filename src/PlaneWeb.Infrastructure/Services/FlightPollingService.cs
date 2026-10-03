@@ -45,6 +45,8 @@ public sealed class FlightPollingService(
         backfill.Enabled = s.TraceBackfill; // before polling, so an outage can't delay disabling it
         var snap = await PollAsync(s, ct);
         var now = time.GetUtcNow();
+        // Stamp with completion time so the snapshot and the trail points it produced agree.
+        snap = snap with { UpdatedAt = now };
         trails.Window = TimeSpan.FromMinutes(Math.Clamp(s.TrailMinutes, 1, WallSettings.MaxTrailMinutes));
         foreach (var a in snap.MapAircraft)
         {
