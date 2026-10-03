@@ -1,0 +1,141 @@
+@page "/map"
+@using PlaneWeb.Core
+@using PlaneWeb.Infrastructure.Services
+@implements IAsyncDisposable
+@inject FlightStateStore Store
+@inject TrailStore Trails
+@inject SettingsService SettingsSvc
+@inject IJSRuntime JS
+
+<PageTitle>Map · The Plane Web</PageTitle>
+
+<div class="livemap-page">
+    <div @ref="mapEl" class="livemap"></div>
+    <div class="livemap-bar">
+        <span class="led amber">@(s?.Title ?? "THE PLANE WEB")</span>
+        <span class="led dim small">@summary</span>
+        @if (snap.Error is not null) { <span class="led red small">⚠ @snap.Error</span> }
+        <nav>
+            <a href="/wall">WALL</a>
+            <a href="/settings">SETTINGS</a>
+        </nav>
+    </div>
+</div>
+
+@code {
+    private WallSettings? s;
+    private WallSnapshot snap = WallSnapshot.Empty;
+    private ElementReference mapEl;
+    private bool mapReady;
+    private string summary = "Waiting for live data…";
+    // What this browser has already received, so updates only carry new points.
+    private readonly Dictionary<string, (int Rev, double LastT)> sent = new(StringComparer.OrdinalIgnoreCase);
+
+    protected override async Task OnInitializedAsync()
+    {
+        s = await SettingsSvc.GetAsync();
+        snap = Store.Current;
+        Store.Updated += OnSnapshot;
+        SettingsSvc.Changed += OnSettings;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || s is null) return;
+        await JS.InvokeVoidAsync("planeWebLiveMap.init", mapEl, AreaState(), s.MapLayer);
+        mapReady = true;
+        await Push();
+        StateHasChanged(); // show the summary for the snapshot that already existed
+    }
+
+    private object AreaState() => new
+    {
+        lat = s!.CenterLat, lon = s.CenterLon, radiusNm = s.RadiusNm,
+        shape = s.Mode == DisplayMode.Area ? (int)s.Shape : -1,
+        polygon = s.Polygon.Select(p => new[] { p.Lat, p.Lon }).ToArray(),
+    };
+
+    private void OnSnapshot(WallSnapshot next) => InvokeAsync(async () =>
+    {
+        snap = next;
+        await Push();
+        StateHasChanged();
+    });
+
+    private void OnSettings(WallSettings next) => InvokeAsync(async () =>
+    {
+        s = next;
+        sent.Clear(); // filters may have changed: resend everything
+        if (mapReady) await SafeJs("planeWebLiveMap.setArea", AreaState(), true);
+        await Push();
+        StateHasChanged();
+    });
+
+    private async Task Push()
+    {
+        if (!mapReady || s is null) return;
+
+        // "On the wall" = the nearest page of flights the wall leads with (or the tracked flights).
+        var onWall = (snap.Mode == DisplayMode.Area
+                ? snap.AreaFlights.Take(s.MaxAreaFlights).Select(f => f.Aircraft.Hex)
+                : snap.Tracked.Select(t => t.Live?.Aircraft.Hex).OfType<string>())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        bool Include(string hex) => s.MapShowAll || onWall.Contains(hex);
+
+        var aircraft = snap.MapAircraft.Where(a => a.Position.HasValue && Include(a.Hex)).Select(a => new
+        {
+            hex = a.Hex, lat = a.Lat, lon = a.Lon, alt = a.OnGround ? 0 : a.AltitudeFt, ground = a.OnGround,
+            gs = a.GroundSpeedKt, trk = a.TrackDeg, wall = onWall.Contains(a.Hex),
+            ident = Fmt.Ident(a), type = Fmt.Type(a), reg = a.Registration, op = a.Operator,
+            callsign = a.Callsign, typeCode = a.TypeCode, squawk = a.Squawk, category = a.Category,
+            altText = $"{Fmt.Climb(a.VerticalRateFpm)} {Fmt.Alt(a, s.Units)}".Trim(),
+            spdText = Fmt.Speed(a.GroundSpeedKt, s.Units),
+            hdgText = Fmt.Heading(a.TrackDeg),
+            vrText = a.VerticalRateFpm is { } vr ? $"{vr:+#,0;-#,0;0} fpm" : "---",
+            distText = Fmt.Dist(Geo.DistanceNm(s.Center, a.Position!.Value), s.Units),
+        }).ToList();
+
+        var present = new List<string>();
+        var trails = new List<object>();
+        foreach (var t in Trails.Snapshot())
+        {
+            if (!Include(t.Hex) || t.Points.Count == 0) continue;
+            present.Add(t.Hex);
+            var full = !sent.TryGetValue(t.Hex, out var prev) || prev.Rev != t.Revision;
+            var pts = full ? t.Points : t.Points.Where(p => p.T > prev.LastT).ToList();
+            // Always send the entry, even with no new points, so metadata like the wall highlight stays current.
+            trails.Add(new { hex = t.Hex, full, wall = onWall.Contains(t.Hex),
+                    pts = pts.Select(p => new double?[] { Math.Round(p.T, 1), p.Lat, p.Lon, p.AltFt }) });
+            sent[t.Hex] = (t.Revision, t.Points[^1].T);
+        }
+        foreach (var gone in sent.Keys.Except(present, StringComparer.OrdinalIgnoreCase).ToList()) sent.Remove(gone);
+
+        summary = snap.UpdatedAt == DateTimeOffset.MinValue ? "Waiting for live data…"
+            : $"{aircraft.Count} aircraft · {onWall.Count} on wall · {s.TrailMinutes} min trails · {snap.Source} · {snap.UpdatedAt.ToLocalTime():HH:mm:ss}";
+
+        if (!await SafeJs("planeWebLiveMap.update", new
+        {
+            now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
+            windowSec = s.TrailMinutes * 60,
+            // Time of the last successful poll: failed polls repeat the old snapshot and must not reset animation.
+            asOf = snap.UpdatedAt == DateTimeOffset.MinValue ? 0 : snap.UpdatedAt.ToUnixTimeMilliseconds() / 1000.0,
+            present, trails, aircraft,
+        }))
+            sent.Clear(); // not delivered: resend full trails next time
+    }
+
+    private async Task<bool> SafeJs(string fn, params object?[] args)
+    {
+        try { await JS.InvokeVoidAsync(fn, args); return true; }
+        catch (JSDisconnectedException) { return false; }
+        catch (TaskCanceledException) { return false; }
+        catch (JSException) { return false; }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        Store.Updated -= OnSnapshot;
+        SettingsSvc.Changed -= OnSettings;
+        if (mapReady) await SafeJs("planeWebLiveMap.dispose");
+    }
+}

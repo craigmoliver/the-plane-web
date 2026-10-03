@@ -24,10 +24,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -t flightwall-web:ci .
+      - run: docker build -t planeweb-web:ci .
       - name: Smoke test
         run: |
-          docker run -d --name fw -p 8080:8080 flightwall-web:ci
+          docker run -d --name fw -p 8080:8080 planeweb-web:ci
           for i in $(seq 1 30); do curl -fs localhost:8080/healthz && break; sleep 2; done
           curl -fs localhost:8080/healthz || { docker logs fw; exit 1; }
           # Every script/stylesheet referenced by the page must be served (catches missing Blazor runtime).
