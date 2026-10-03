@@ -40,7 +40,10 @@ public sealed class SettingsService(IDbContextFactory<FlightWallDbContext> dbFac
         s.TrackedFlights = s.TrackedFlights
             .Select(CallsignNormalizer.Normalize).Where(x => x.Length > 0)
             .Distinct().Take(WallSettings.MaxTracked).ToList();
-        s.RadiusNm = Math.Clamp(s.RadiusNm, 1, 250);
+        s.RadiusNm = Math.Clamp(s.RadiusNm, 1, WallSettings.MaxQueryRadiusNm);
+        // Persist the shape that will actually be used: a polygon needs at least 3 points.
+        if (s.Shape == AreaShape.Polygon && s.Polygon.Count < 3) s.Shape = AreaShape.Radius;
+        if (s.Validate() is { } error) throw new ArgumentException(error, nameof(s));
         s.RotateSeconds = Math.Clamp(s.RotateSeconds, 3, 120);
         s.MaxAreaFlights = Math.Clamp(s.MaxAreaFlights, 1, 20);
 

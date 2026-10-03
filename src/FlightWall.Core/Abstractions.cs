@@ -38,6 +38,17 @@ public sealed class WallSettings
     public string Title { get; set; } = "THE FLIGHT WALL";
 
     public const int MaxTracked = 5;
+    /// <summary>Largest radius the ADS-B providers accept in one query.</summary>
+    public const double MaxQueryRadiusNm = 250;
+
+    /// <summary>Returns a user-facing validation error, or null if the settings are usable.</summary>
+    public string? Validate()
+    {
+        if (Shape == AreaShape.Polygon && Polygon is { Count: >= 3 } poly &&
+            Geo.BoundingCircle(poly).RadiusNm > MaxQueryRadiusNm)
+            return $"The drawn area is too large: it must fit within a {MaxQueryRadiusNm:0} nm radius. Draw a smaller shape.";
+        return null;
+    }
 
     public GeoPoint Center => new(CenterLat, CenterLon);
 

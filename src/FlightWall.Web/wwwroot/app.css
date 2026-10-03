@@ -127,6 +127,7 @@ input[type=checkbox] { width: 1rem; height: 1rem; }
 .tracked li { display: flex; justify-content: space-between; align-items: center; background: #0b0c0d; border: 1px solid var(--border); border-radius: 6px; padding: .4rem .6rem; }
 .actions { display: flex; align-items: center; gap: 1rem; margin-top: .5rem; }
 .status { color: var(--green); font-size: .85rem; }
+.error { color: #ff6b61; font-size: .85rem; }
 .live-row { display: flex; justify-content: space-between; padding: .5rem 0; border-bottom: 1px solid var(--border); }
 
 /* Leaflet dark tweaks */

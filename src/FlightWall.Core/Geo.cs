@@ -29,7 +29,8 @@ public static class Geo
     public static string CompassPoint(double deg)
     {
         string[] pts = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
-        return pts[(int)Math.Round(((deg % 360) + 360) % 360 / 45.0) % 8];
+        // Half-sector offset + Floor: each sector is [start, end), so boundaries resolve consistently clockwise.
+        return pts[(int)Math.Floor((((deg % 360) + 360) % 360 + 22.5) / 45.0) % 8];
     }
 
     /// <summary>Ray-casting point-in-polygon (lat/lon treated as planar; fine for local areas).</summary>
