@@ -77,7 +77,7 @@ code, .mono { font-family: ui-monospace, monospace; }
     object-fit: contain; background: #f2f2f2; border-radius: 4px; padding: 2px 4px;
 }
 .airline-logo.large { height: clamp(3rem, 7vw, 7rem); width: clamp(6rem, 14vw, 14rem); padding: 4px 8px; }
-.airline-logo.empty { visibility: hidden; }
+.airline-logo.empty, .airline-logo.failed { visibility: hidden; }
 .board-head { background: none; border: none; animation: none; }
 .board-head > span { font-size: clamp(.8rem, 1.3vw, 1.3rem); }
 @keyframes flip { from { transform: rotateX(80deg); opacity: 0; } to { transform: none; opacity: 1; } }

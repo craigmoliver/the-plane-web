@@ -141,3 +141,14 @@ public class AirlineIcaoTests
     [InlineData(null, null)]
     public void AirlineIcao(string? cs, string? expected) => Assert.Equal(expected, CallsignNormalizer.AirlineIcao(cs));
 }
+
+public class AirlineLogoRetryTests
+{
+    [Theory]
+    [InlineData(1, 30)]
+    [InlineData(2, 60)]
+    [InlineData(3, 120)]
+    [InlineData(10, 600)]
+    public void RetryDelay_BacksOffAndCaps(int failures, int seconds) =>
+        Assert.Equal(TimeSpan.FromSeconds(seconds), FlightWall.Web.Components.AirlineLogo.RetryDelay(failures));
+}
