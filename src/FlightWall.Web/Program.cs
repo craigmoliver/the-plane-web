@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.DataProtection;
 using FlightWall.Infrastructure;
 using FlightWall.Infrastructure.Data;
 using FlightWall.Infrastructure.Providers;
@@ -22,6 +23,9 @@ builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 builder.Services.AddFlightWall(builder.Configuration);
 builder.Services.AddHealthChecks();
+// Persist data-protection keys (antiforgery/circuits) so restarts don't invalidate open pages.
+if (builder.Configuration["FlightWall:KeysDir"] is { Length: > 0 } keysDir)
+    builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(keysDir));
 
 var app = builder.Build();
 

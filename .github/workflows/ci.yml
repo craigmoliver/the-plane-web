@@ -28,5 +28,9 @@ jobs:
       - name: Smoke test
         run: |
           docker run -d --name fw -p 8080:8080 flightwall-web:ci
-          for i in $(seq 1 30); do curl -fs localhost:8080/healthz && exit 0; sleep 2; done
-          docker logs fw; exit 1
+          for i in $(seq 1 30); do curl -fs localhost:8080/healthz && break; sleep 2; done
+          curl -fs localhost:8080/healthz || { docker logs fw; exit 1; }
+          # Every script/stylesheet referenced by the page must be served (catches missing Blazor runtime).
+          for u in $(curl -fs localhost:8080/settings | grep -oE '(src|href)="[^"]+\.(js|css)"' | cut -d'"' -f2 | grep -v '^https'); do
+            curl -fs -o /dev/null "localhost:8080/$u" || { echo "MISSING $u"; exit 1; }
+          done
