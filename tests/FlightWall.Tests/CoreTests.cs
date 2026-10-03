@@ -96,3 +96,15 @@ public class CallsignNormalizerTests
     [InlineData("  ", "")]
     public void Normalize(string input, string expected) => Assert.Equal(expected, CallsignNormalizer.Normalize(input));
 }
+
+public class AirlineIcaoTests
+{
+    [Theory]
+    [InlineData("ASA1", "ASA")]
+    [InlineData("ual123 ", "UAL")]
+    [InlineData("N12345", null)]
+    [InlineData("N123AB", null)]
+    [InlineData("CGABC", null)]
+    [InlineData(null, null)]
+    public void AirlineIcao(string? cs, string? expected) => Assert.Equal(expected, CallsignNormalizer.AirlineIcao(cs));
+}

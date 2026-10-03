@@ -105,3 +105,36 @@ public class FlightProcessorTests
         Assert.NotNull(v.DistanceNm);
     }
 }
+
+public class AirlineLogoServiceTests
+{
+    private sealed class FakeHandler : HttpMessageHandler
+    {
+        public int Calls;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage r, CancellationToken ct)
+        {
+            Calls++;
+            return Task.FromResult(r.RequestUri!.AbsolutePath.EndsWith("ASA.png")
+                ? new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new ByteArrayContent([1, 2, 3]) }
+                : new HttpResponseMessage(System.Net.HttpStatusCode.NotFound));
+        }
+    }
+
+    [Fact]
+    public async Task CachesHitsAndMisses_AndRejectsBadCodes()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "fwlogos-" + Guid.NewGuid());
+        var h = new FakeHandler();
+        var svc = new AirlineLogoService(new HttpClient(h) { BaseAddress = new Uri("https://x/") }, dir,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<AirlineLogoService>.Instance);
+
+        var p = await svc.GetLogoPathAsync("asa", default);
+        Assert.Equal([1, 2, 3], await File.ReadAllBytesAsync(p!));
+        await svc.GetLogoPathAsync("ASA", default);
+        Assert.Null(await svc.GetLogoPathAsync("ZZZ", default));
+        Assert.Null(await svc.GetLogoPathAsync("ZZZ", default));
+        Assert.Null(await svc.GetLogoPathAsync("../x", default));
+        Assert.Equal(2, h.Calls);
+        Directory.Delete(dir, true);
+    }
+}

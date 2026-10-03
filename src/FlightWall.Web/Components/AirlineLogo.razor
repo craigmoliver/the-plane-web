@@ -1,0 +1,16 @@
+@using FlightWall.Core
+@if (Icao is { } icao)
+{
+    <img class="airline-logo @Class" src="/logos/@(icao).png" alt="@icao" loading="lazy"
+         onerror="this.style.visibility='hidden'" />
+}
+else
+{
+    <span class="airline-logo empty @Class"></span>
+}
+
+@code {
+    [Parameter] public string? Callsign { get; set; }
+    [Parameter] public string? Class { get; set; }
+    private string? Icao => CallsignNormalizer.AirlineIcao(Callsign);
+}
