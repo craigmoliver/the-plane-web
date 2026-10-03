@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using FlightWall.Core;
 using FlightWall.Infrastructure.Providers;
 using FlightWall.Infrastructure.Services;
@@ -133,6 +134,84 @@ public class FallbackProviderTests
 
         for (var i = 0; i < results.Length; i++)
             Assert.Equal(i % 2 == 0 ? "a" : "b", results[i].Source);
+    }
+}
+
+public class SettingsServiceTests
+{
+    private static SettingsService NewService()
+    {
+        var conn = new Microsoft.Data.Sqlite.SqliteConnection("Data Source=:memory:");
+        conn.Open();
+        var opts = new Microsoft.EntityFrameworkCore.DbContextOptionsBuilder<FlightWall.Infrastructure.Data.FlightWallDbContext>()
+            .UseSqlite(conn).Options;
+        using (var db = new FlightWall.Infrastructure.Data.FlightWallDbContext(opts)) db.Database.EnsureCreated();
+        return new SettingsService(new Factory(opts));
+    }
+
+    private sealed class Factory(Microsoft.EntityFrameworkCore.DbContextOptions<FlightWall.Infrastructure.Data.FlightWallDbContext> o)
+        : Microsoft.EntityFrameworkCore.IDbContextFactory<FlightWall.Infrastructure.Data.FlightWallDbContext>
+    {
+        public FlightWall.Infrastructure.Data.FlightWallDbContext CreateDbContext() => new(o);
+    }
+
+    [Fact]
+    public async Task Save_NormalizesPolygonWithTooFewPoints()
+    {
+        var svc = NewService();
+        await svc.SaveAsync(new WallSettings { Shape = AreaShape.Polygon, PolygonJson = "[[47,-122]]" });
+        Assert.Equal(AreaShape.Radius, (await svc.GetAsync()).Shape);
+    }
+
+    [Fact]
+    public async Task Save_RejectsOversizedPolygon()
+    {
+        var svc = NewService();
+        await Assert.ThrowsAsync<ArgumentException>(() => svc.SaveAsync(new WallSettings
+            { Shape = AreaShape.Polygon, PolygonJson = "[[30,-125],[30,-100],[49,-100],[49,-125]]" }));
+    }
+}
+
+public class PollingFailureTests
+{
+    private sealed class Down : IFlightDataProvider
+    {
+        public string Name => "down";
+        public Task<ProviderResult> GetAircraftNearAsync(GeoPoint c, double r, CancellationToken ct) => throw new HttpRequestException("x");
+        public Task<ProviderResult> GetByCallsignAsync(string cs, CancellationToken ct) => throw new HttpRequestException("x");
+    }
+    private sealed class NoRoutes : IRouteLookup
+    {
+        public Task<FlightRoute?> GetRouteAsync(string cs, CancellationToken ct) => Task.FromResult<FlightRoute?>(null);
+    }
+
+    [Fact]
+    public async Task FailedPoll_KeepsLastSuccessfulTimestamp()
+    {
+        var store = new FlightStateStore();
+        var lastGood = DateTimeOffset.Parse("2026-01-01T00:00:00Z");
+        store.Publish(new WallSnapshot { UpdatedAt = lastGood });
+        var conn = new Microsoft.Data.Sqlite.SqliteConnection("Data Source=:memory:"); conn.Open();
+        var opts = new Microsoft.EntityFrameworkCore.DbContextOptionsBuilder<FlightWall.Infrastructure.Data.FlightWallDbContext>().UseSqlite(conn).Options;
+        using (var db = new FlightWall.Infrastructure.Data.FlightWallDbContext(opts)) db.Database.EnsureCreated();
+        var settings = new SettingsService(new SingleFactory(opts));
+        var svc = new FlightPollingService(new Down(), new NoRoutes(), settings, store,
+            Microsoft.Extensions.Options.Options.Create(new FlightWallOptions { PollSeconds = 60 }), TimeProvider.System,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<FlightPollingService>.Instance);
+
+        using var cts = new CancellationTokenSource();
+        await svc.StartAsync(cts.Token);
+        for (var i = 0; i < 100 && store.Current.Error is null; i++) await Task.Delay(20);
+        await svc.StopAsync(default);
+
+        Assert.NotNull(store.Current.Error);
+        Assert.Equal(lastGood, store.Current.UpdatedAt);
+    }
+
+    private sealed class SingleFactory(Microsoft.EntityFrameworkCore.DbContextOptions<FlightWall.Infrastructure.Data.FlightWallDbContext> o)
+        : Microsoft.EntityFrameworkCore.IDbContextFactory<FlightWall.Infrastructure.Data.FlightWallDbContext>
+    {
+        public FlightWall.Infrastructure.Data.FlightWallDbContext CreateDbContext() => new(o);
     }
 }
 

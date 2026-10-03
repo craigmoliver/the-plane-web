@@ -108,6 +108,28 @@ public class FmtTests
     }
 }
 
+public class ReviewRound2Tests
+{
+    [Theory]
+    [InlineData(22.4, "N")]
+    [InlineData(22.5, "NE")]
+    [InlineData(67.5, "E")]
+    [InlineData(337.5, "N")]
+    [InlineData(-45, "NW")]
+    public void CompassBoundaries_AreConsistent(double deg, string expected) =>
+        Assert.Equal(expected, Geo.CompassPoint(deg));
+
+    [Fact]
+    public void Validate_RejectsPolygonBeyondProviderRadius()
+    {
+        var small = new WallSettings { Shape = AreaShape.Polygon, PolygonJson = "[[47,-123],[47,-122],[48,-122]]" };
+        var huge = new WallSettings { Shape = AreaShape.Polygon, PolygonJson = "[[30,-125],[30,-100],[49,-100],[49,-125]]" };
+        Assert.Null(small.Validate());
+        Assert.NotNull(huge.Validate());
+        Assert.Null(new WallSettings { Shape = AreaShape.Radius, PolygonJson = huge.PolygonJson }.Validate());
+    }
+}
+
 public class AirlineIcaoTests
 {
     [Theory]

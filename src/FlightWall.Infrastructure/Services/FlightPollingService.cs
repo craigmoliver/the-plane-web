@@ -51,7 +51,8 @@ public sealed class FlightPollingService(
             catch (Exception ex)
             {
                 log.LogWarning(ex, "Poll failed");
-                store.Publish(store.Current with { Error = "Live data unavailable", UpdatedAt = time.GetUtcNow() });
+                // Keep the last successful UpdatedAt so stale data is not presented as fresh.
+                store.Publish(store.Current with { Error = $"Live data unavailable (last attempt {time.GetUtcNow().ToLocalTime():HH:mm:ss})" });
             }
 
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, _wake.Token);

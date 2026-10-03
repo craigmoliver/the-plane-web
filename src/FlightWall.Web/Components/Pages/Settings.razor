@@ -110,6 +110,7 @@
                 <div class="actions">
                     <button class="btn primary" @onclick="Save">Save</button>
                     @if (status is not null) { <span class="status">@status</span> }
+                    @if (validationError is not null) { <span class="error" role="alert">@validationError</span> }
                 </div>
             </section>
 
@@ -146,6 +147,7 @@
     private bool mapReady;
     private string? newFlight;
     private string? status;
+    private string? validationError;
     private string liveSummary = "";
 
     protected override async Task OnInitializedAsync()
@@ -226,8 +228,11 @@
     private async Task Save()
     {
         if (s!.MinAltitudeFt > s.MaxAltitudeFt) (s.MinAltitudeFt, s.MaxAltitudeFt) = (s.MaxAltitudeFt, s.MinAltitudeFt);
+        if (s.Validate() is { } error) { status = null; validationError = error; return; }
+        validationError = null;
         await SettingsSvc.SaveAsync(s);
         s = await SettingsSvc.GetAsync();
+        await UpdateMap();
         status = $"Saved at {DateTime.Now:T}";
     }
 
