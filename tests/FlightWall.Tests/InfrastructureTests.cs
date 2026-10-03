@@ -274,3 +274,30 @@ public class AirlineLogoStampedeTests
         Assert.Equal(1, h.Calls);
     }
 }
+
+public class AirlineLogoTransientFailureTests
+{
+    private sealed class SlowError : HttpMessageHandler
+    {
+        public int Calls;
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage r, CancellationToken ct)
+        {
+            Interlocked.Increment(ref Calls);
+            await Task.Delay(50, ct);
+            return new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable);
+        }
+    }
+
+    [Fact]
+    public async Task ConcurrentTransientFailures_HitUpstreamOnce()
+    {
+        var h = new SlowError();
+        var svc = new AirlineLogoService(new HttpClient(h) { BaseAddress = new Uri("https://x/") },
+            Path.Combine(Path.GetTempPath(), "fwlogos-" + Guid.NewGuid()),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<AirlineLogoService>.Instance);
+
+        var results = await Task.WhenAll(Enumerable.Range(0, 10).Select(_ => svc.GetLogoPathAsync("ASA", default)));
+        Assert.All(results, Assert.Null);
+        Assert.Equal(1, h.Calls);
+    }
+}

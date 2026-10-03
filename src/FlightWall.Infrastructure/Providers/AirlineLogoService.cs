@@ -12,6 +12,9 @@ namespace FlightWall.Infrastructure.Providers;
 public sealed partial class AirlineLogoService(HttpClient http, string cacheDir, ILogger<AirlineLogoService> log)
 {
     private static readonly TimeSpan MissTtl = TimeSpan.FromHours(12);
+    /// <summary>Short TTL for transient failures (5xx/timeouts): coalesces queued requests during an outage,
+    /// and stays below the client's first retry (30s) so recovery is picked up promptly.</summary>
+    private static readonly TimeSpan FailureTtl = TimeSpan.FromSeconds(20);
     private readonly ConcurrentDictionary<string, DateTimeOffset> _misses = new();
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _locks = new();
 
@@ -51,6 +54,7 @@ public sealed partial class AirlineLogoService(HttpClient http, string cacheDir,
         catch (Exception ex)
         {
             log.LogDebug(ex, "Logo fetch failed for {Icao}", icao);
+            _misses[icao] = DateTimeOffset.UtcNow + FailureTtl;
             return null;
         }
         finally { gate.Release(); }
