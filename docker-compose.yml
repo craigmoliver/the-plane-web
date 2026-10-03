@@ -1,0 +1,17 @@
+services:
+  flightwall:
+    build: .
+    image: flightwall-web:latest
+    container_name: flightwall
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - FlightWall__Provider=adsb.lol   # or adsb.fi (the other is used as fallback)
+      - FlightWall__PollSeconds=5
+      - TZ=America/Los_Angeles          # wall clock / local times
+    volumes:
+      - flightwall-data:/data
+
+volumes:
+  flightwall-data:

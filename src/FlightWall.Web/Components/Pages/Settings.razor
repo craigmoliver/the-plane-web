@@ -1,0 +1,259 @@
+@page "/settings"
+@using FlightWall.Core
+@using FlightWall.Infrastructure.Services
+@using System.Text.Json
+@implements IAsyncDisposable
+@inject SettingsService SettingsSvc
+@inject FlightStateStore Store
+@inject IJSRuntime JS
+
+<PageTitle>Settings · FlightWall</PageTitle>
+
+<div class="settings">
+    <header class="settings-header">
+        <h1>FlightWall Settings</h1>
+        <nav><a href="/wall" class="btn primary">Open Wall ▶</a></nav>
+    </header>
+
+    @if (s is null)
+    {
+        <p>Loading…</p>
+    }
+    else
+    {
+        <div class="settings-grid">
+            <section class="panel">
+                <h2>Display mode</h2>
+                <div class="segmented">
+                    <button class="@(s.Mode == DisplayMode.Area ? "on" : "")" @onclick="() => SetMode(DisplayMode.Area)">Area tracking</button>
+                    <button class="@(s.Mode == DisplayMode.Flights ? "on" : "")" @onclick="() => SetMode(DisplayMode.Flights)">Flight tracking</button>
+                </div>
+
+                <label>Wall title <input @bind="s.Title" maxlength="40" /></label>
+
+                @if (s.Mode == DisplayMode.Area)
+                {
+                    <h2>Area</h2>
+                    <div class="segmented">
+                        <button class="@(s.Shape == AreaShape.Radius ? "on" : "")" @onclick="() => SetShape(AreaShape.Radius)">Radius</button>
+                        <button class="@(s.Shape == AreaShape.Polygon ? "on" : "")" @onclick="() => SetShape(AreaShape.Polygon)">Drawn shape</button>
+                    </div>
+                    <p class="hint">
+                        @if (s.Shape == AreaShape.Radius) { <text>Click the map to set your location.</text> }
+                        else { <text>Use the polygon/rectangle tools at the top-left of the map to draw an area. Click the map to set your reference location (used for distance/bearing).</text> }
+                    </p>
+                    <div class="row">
+                        <label>Latitude <input type="number" step="0.0001" @bind="s.CenterLat" @bind:after="UpdateMap" /></label>
+                        <label>Longitude <input type="number" step="0.0001" @bind="s.CenterLon" @bind:after="UpdateMap" /></label>
+                    </div>
+                    <button class="btn" @onclick="UseMyLocation">📍 Use my location</button>
+                    @if (s.Shape == AreaShape.Radius)
+                    {
+                        <label>Radius: @s.RadiusNm.ToString("0") nm (@((s.RadiusNm * 1.852).ToString("0")) km)
+                            <input type="range" min="1" max="100" step="1" @bind="s.RadiusNm" @bind:event="oninput" @bind:after="UpdateMap" />
+                        </label>
+                    }
+                    else
+                    {
+                        <p class="hint">Polygon points: @s.Polygon.Count</p>
+                    }
+
+                    <h2>Filters</h2>
+                    <div class="row">
+                        <label>Min altitude (ft) <input type="number" step="500" @bind="s.MinAltitudeFt" /></label>
+                        <label>Max altitude (ft) <input type="number" step="500" @bind="s.MaxAltitudeFt" /></label>
+                    </div>
+                    <label class="check"><input type="checkbox" @bind="s.IncludeHelicopters" /> Include helicopters</label>
+                    <label class="check"><input type="checkbox" @bind="s.IncludeLight" /> Include light / private aircraft</label>
+                    <label class="check"><input type="checkbox" @bind="s.IncludeGround" /> Include aircraft on the ground</label>
+                    <label>Flights per page <input type="number" min="1" max="20" @bind="s.MaxAreaFlights" /></label>
+                }
+                else
+                {
+                    <h2>Tracked flights (up to @WallSettings.MaxTracked)</h2>
+                    <p class="hint">Enter flight numbers (UA123) or callsigns (UAL123, N12345).</p>
+                    <ul class="tracked">
+                        @foreach (var f in s.TrackedFlights)
+                        {
+                            <li><span class="mono">@f</span> <button class="btn small" @onclick="() => s.TrackedFlights.Remove(f)">✕</button></li>
+                        }
+                    </ul>
+                    @if (s.TrackedFlights.Count < WallSettings.MaxTracked)
+                    {
+                        <form class="row" @onsubmit="AddFlight" @onsubmit:preventDefault>
+                            <input placeholder="e.g. AS 1" @bind="newFlight" maxlength="10" />
+                            <button class="btn" type="submit">Add</button>
+                        </form>
+                        @if (!string.IsNullOrWhiteSpace(newFlight))
+                        {
+                            <p class="hint">Will track as <span class="mono">@CallsignNormalizer.Normalize(newFlight)</span></p>
+                        }
+                    }
+                    <label>Reference location (for distance)</label>
+                    <div class="row">
+                        <label>Latitude <input type="number" step="0.0001" @bind="s.CenterLat" /></label>
+                        <label>Longitude <input type="number" step="0.0001" @bind="s.CenterLon" /></label>
+                    </div>
+                }
+
+                <h2>Display</h2>
+                <div class="row">
+                    <label>Rotate every (s) <input type="number" min="3" max="120" @bind="s.RotateSeconds" /></label>
+                    <label>Units
+                        <select @bind="s.Units">
+                            <option value="@UnitSystem.Imperial">Imperial (ft, mph, mi)</option>
+                            <option value="@UnitSystem.Metric">Metric (m, km/h, km)</option>
+                        </select>
+                    </label>
+                </div>
+
+                <div class="actions">
+                    <button class="btn primary" @onclick="Save">Save</button>
+                    @if (status is not null) { <span class="status">@status</span> }
+                </div>
+            </section>
+
+            <section class="panel map-panel">
+                @if (s.Mode == DisplayMode.Area)
+                {
+                    <div @ref="mapEl" class="map"></div>
+                    <p class="hint">@liveSummary</p>
+                }
+                else
+                {
+                    <h2>Live status</h2>
+                    @foreach (var t in Store.Current.Tracked)
+                    {
+                        <div class="live-row">
+                            <span class="mono">@t.Callsign</span>
+                            @if (t.Live is { } v)
+                            {
+                                <span>@(v.Route is { } r ? $"{r.Origin.Code} → {r.Destination.Code}" : "route unknown") · @Fmt.Alt(v.Aircraft, s.Units)</span>
+                            }
+                            else { <span class="dim">not currently airborne / not found</span> }
+                        </div>
+                    }
+                }
+            </section>
+        </div>
+    }
+</div>
+
+@code {
+    private WallSettings? s;
+    private ElementReference mapEl;
+    private DotNetObjectReference<Settings>? selfRef;
+    private bool mapReady;
+    private string? newFlight;
+    private string? status;
+    private string liveSummary = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        s = await SettingsSvc.GetAsync();
+        Store.Updated += OnSnapshot;
+        UpdateSummary(Store.Current);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (s is { Mode: DisplayMode.Area } && !mapReady)
+        {
+            selfRef ??= DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("flightWallMap.init", mapEl, selfRef, MapState());
+            mapReady = true;
+            await PushAircraft(Store.Current);
+        }
+    }
+
+    private object MapState() => new
+    {
+        lat = s!.CenterLat, lon = s.CenterLon, radiusNm = s.RadiusNm, shape = (int)s.Shape,
+        polygon = s.Polygon.Select(p => new[] { p.Lat, p.Lon }).ToArray(),
+    };
+
+    private async Task UpdateMap()
+    {
+        if (mapReady) await JS.InvokeVoidAsync("flightWallMap.update", MapState(), false);
+    }
+
+    [JSInvokable]
+    public async Task OnCenterPicked(double lat, double lon)
+    {
+        s!.CenterLat = lat; s.CenterLon = lon;
+        await UpdateMap();
+        StateHasChanged();
+    }
+
+    [JSInvokable]
+    public async Task OnPolygonDrawn(string json)
+    {
+        s!.PolygonJson = json;
+        if (s.Polygon.Count >= 3) s.Shape = AreaShape.Polygon;
+        await UpdateMap();
+        StateHasChanged();
+    }
+
+    private async Task SetMode(DisplayMode m)
+    {
+        if (s!.Mode == m) return;
+        if (mapReady) { await JS.InvokeVoidAsync("flightWallMap.dispose"); mapReady = false; }
+        s.Mode = m;
+    }
+
+    private async Task SetShape(AreaShape shape)
+    {
+        s!.Shape = shape;
+        await UpdateMap();
+    }
+
+    private async Task UseMyLocation()
+    {
+        var loc = await JS.InvokeAsync<double[]?>("flightWallMap.locate");
+        if (loc is { Length: 2 }) await OnCenterPicked(loc[0], loc[1]);
+        else status = "Location unavailable (browsers require HTTPS or localhost).";
+    }
+
+    private void AddFlight()
+    {
+        var cs = CallsignNormalizer.Normalize(newFlight ?? "");
+        if (cs.Length > 0 && !s!.TrackedFlights.Contains(cs) && s.TrackedFlights.Count < WallSettings.MaxTracked)
+            s.TrackedFlights.Add(cs);
+        newFlight = null;
+    }
+
+    private async Task Save()
+    {
+        if (s!.MinAltitudeFt > s.MaxAltitudeFt) (s.MinAltitudeFt, s.MaxAltitudeFt) = (s.MaxAltitudeFt, s.MinAltitudeFt);
+        await SettingsSvc.SaveAsync(s);
+        s = await SettingsSvc.GetAsync();
+        status = $"Saved at {DateTime.Now:T}";
+    }
+
+    private void OnSnapshot(WallSnapshot snap) => InvokeAsync(async () =>
+    {
+        UpdateSummary(snap);
+        if (mapReady) await PushAircraft(snap);
+        StateHasChanged();
+    });
+
+    private void UpdateSummary(WallSnapshot snap) =>
+        liveSummary = snap.UpdatedAt == DateTimeOffset.MinValue ? "Waiting for live data…"
+            : $"{snap.AreaFlights.Count} aircraft in saved area · source {snap.Source} · {snap.UpdatedAt.ToLocalTime():T}";
+
+    private async Task PushAircraft(WallSnapshot snap)
+    {
+        var list = snap.AreaFlights.Where(f => f.Aircraft.Position.HasValue).Select(f => new
+        {
+            lat = f.Aircraft.Lat, lon = f.Aircraft.Lon, label = Fmt.Ident(f.Aircraft),
+        });
+        try { await JS.InvokeVoidAsync("flightWallMap.setAircraft", list); } catch (JSDisconnectedException) { }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        Store.Updated -= OnSnapshot;
+        try { if (mapReady) await JS.InvokeVoidAsync("flightWallMap.dispose"); } catch (JSDisconnectedException) { }
+        selfRef?.Dispose();
+    }
+}
