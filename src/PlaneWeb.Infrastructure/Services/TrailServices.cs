@@ -58,7 +58,12 @@ public sealed class TraceBackfillService(
             }
             try
             {
-                if (trails.Get(hex) is not null) // skip if the aircraft already left
+                if (trails.Get(hex) is null)
+                {
+                    // Aircraft left before its turn: forget the attempt so it's looked up if it returns.
+                    lock (_lock) _attempted.Remove(hex);
+                }
+                else
                 {
                     var points = await client.GetRecentAsync(hex, stoppingToken);
                     trails.Merge(hex, points, time.GetUtcNow());
