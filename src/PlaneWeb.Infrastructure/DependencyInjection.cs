@@ -13,7 +13,7 @@ public static class DependencyInjection
 {
     public static IServiceCollection AddPlaneWeb(this IServiceCollection services, IConfiguration config)
     {
-        services.Configure<PlaneWebOptions>(config.GetSection("The Plane Web"));
+        services.Configure<PlaneWebOptions>(config.GetSection("PlaneWeb"));
         services.AddSingleton(TimeProvider.System);
 
         var cs = config.GetConnectionString("Default") ?? "Data Source=planeweb.db";

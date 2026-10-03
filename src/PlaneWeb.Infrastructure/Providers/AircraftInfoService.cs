@@ -19,6 +19,8 @@ public sealed record AircraftInfo
     public string? OwnerCountry { get; init; }
     public string? OperatorFlag { get; init; }
     public AircraftPhoto? Photo { get; init; }
+    /// <summary>False when neither upstream returned data (only the caller's hints are present).</summary>
+    [System.Text.Json.Serialization.JsonIgnore] public bool Found { get; init; }
 }
 
 /// <summary>
@@ -38,15 +40,21 @@ public sealed class AircraftInfoService(HttpClient adsbdb, HttpClient planespott
         var now = time.GetUtcNow();
         if (_cache.TryGetValue(hex, out var e) && e.Expires > now) return await e.Value.Value.WaitAsync(ct);
 
-        if (_cache.Count > MaxEntries)
+        if (_cache.Count >= MaxEntries)
+        {
             foreach (var k in _cache.Where(kv => kv.Value.Expires <= now).Select(kv => kv.Key).ToList()) _cache.TryRemove(k, out _);
+            // Hard cap: drop the entries closest to expiry until there is room.
+            if (_cache.Count >= MaxEntries)
+                foreach (var k in _cache.OrderBy(kv => kv.Value.Expires).Take(_cache.Count - MaxEntries / 2).Select(kv => kv.Key).ToList())
+                    _cache.TryRemove(k, out _);
+        }
 
         var lazy = new Lazy<Task<AircraftInfo>>(() => FetchAsync(hex, registration));
         var entry = _cache.AddOrUpdate(hex, _ => (now + HitTtl, lazy),
             (_, old) => old.Expires > now ? old : (now + HitTtl, lazy));
         var info = await entry.Value.Value.WaitAsync(ct);
         // Shorten the cache time when nothing useful came back, so it is retried later.
-        if (info.Photo is null && info.Registration is null && ReferenceEquals(entry.Value, lazy))
+        if (!info.Found && ReferenceEquals(entry.Value, lazy))
             _cache[hex] = (now + MissTtl, lazy);
         return info;
     }
@@ -58,7 +66,7 @@ public sealed class AircraftInfoService(HttpClient adsbdb, HttpClient planespott
         try
         {
             info = ParseAdsbdb(hex, await adsbdb.GetStringAsync($"v0/aircraft/{hex}", cts.Token)) is { } parsed
-                ? parsed with { Registration = parsed.Registration ?? registration } : info;
+                ? parsed with { Registration = parsed.Registration ?? registration, Found = true } : info;
         }
         catch (Exception ex) when (ex is not OperationCanceledException || cts.IsCancellationRequested)
         { log.LogDebug(ex, "adsbdb lookup failed for {Hex}", hex); }
@@ -70,7 +78,7 @@ public sealed class AircraftInfoService(HttpClient adsbdb, HttpClient planespott
             var photo = ParsePlanespotters(await planespotters.GetStringAsync(path, cts.Token));
             if (photo is null && info.Registration is not null)
                 photo = ParsePlanespotters(await planespotters.GetStringAsync($"pub/photos/hex/{hex}", cts.Token));
-            info = info with { Photo = photo };
+            info = info with { Photo = photo, Found = info.Found || photo is not null };
         }
         catch (Exception ex) when (ex is not OperationCanceledException || cts.IsCancellationRequested)
         { log.LogDebug(ex, "planespotters lookup failed for {Hex}", hex); }

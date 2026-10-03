@@ -113,19 +113,21 @@
         summary = snap.UpdatedAt == DateTimeOffset.MinValue ? "Waiting for live data…"
             : $"{aircraft.Count} aircraft · {onWall.Count} on wall · {s.TrailMinutes} min trails · {snap.Source} · {snap.UpdatedAt.ToLocalTime():HH:mm:ss}";
 
-        await SafeJs("planeWebLiveMap.update", new
+        if (!await SafeJs("planeWebLiveMap.update", new
         {
             now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
             windowSec = s.TrailMinutes * 60,
             present, trails, aircraft,
-        });
+        }))
+            sent.Clear(); // not delivered: resend full trails next time
     }
 
-    private async Task SafeJs(string fn, params object?[] args)
+    private async Task<bool> SafeJs(string fn, params object?[] args)
     {
-        try { await JS.InvokeVoidAsync(fn, args); }
-        catch (JSDisconnectedException) { }
-        catch (TaskCanceledException) { }
+        try { await JS.InvokeVoidAsync(fn, args); return true; }
+        catch (JSDisconnectedException) { return false; }
+        catch (TaskCanceledException) { return false; }
+        catch (JSException) { return false; }
     }
 
     public async ValueTask DisposeAsync()

@@ -46,8 +46,11 @@ public sealed class FlightPollingService(
         var now = time.GetUtcNow();
         trails.Window = TimeSpan.FromMinutes(Math.Clamp(s.TrailMinutes, 1, WallSettings.MaxTrailMinutes));
         foreach (var a in snap.MapAircraft)
-            if (trails.Record(a, now) && s.TraceBackfill)
-                backfill.Enqueue(a.Hex);
+        {
+            trails.Record(a, now);
+            // Enqueue skips hexes already tried, so this also retries ones a full queue rejected.
+            if (s.TraceBackfill) backfill.Enqueue(a.Hex);
+        }
         trails.Prune(now);
         return snap;
     }

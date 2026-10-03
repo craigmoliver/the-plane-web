@@ -33,6 +33,8 @@ public sealed class WallSettings
     public bool IncludeHelicopters { get; set; } = true;
     public bool IncludeLight { get; set; } = true;
     public int RotateSeconds { get; set; } = 8;
+    /// <summary>Rotate through pages of results; when off, only the first page (nearest aircraft) is shown.</summary>
+    public bool AutoPage { get; set; } = true;
     public int MaxAreaFlights { get; set; } = 6;
     public UnitSystem Units { get; set; } = UnitSystem.Imperial;
     public string Title { get; set; } = "THE PLANE WEB";

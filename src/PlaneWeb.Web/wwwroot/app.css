@@ -235,3 +235,4 @@ input[type=checkbox] { width: 1rem; height: 1rem; }
 .fw-panel-links a:hover { border-color: var(--amber); }
 
 .settings-header nav { display: flex; gap: .5rem; }
+.route-cell[title] { cursor: help; }

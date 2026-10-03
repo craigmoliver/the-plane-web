@@ -11,7 +11,7 @@ window.planeWebLiveMap = (() => {
     const planes = new Map(); // hex -> { marker, el, svg, label, data, recv }
     const trails = new Map(); // hex -> { pts: [[t,lat,lon,alt]], wall, group }
     const infoCache = new Map(); // hex -> Promise<{details, route}>
-    let panel = null, selected = null;
+    let panel = null, selected = null, autoLabels = false;
 
     const store = {
         get: k => { try { return localStorage.getItem(k); } catch { return null; } },
@@ -96,11 +96,15 @@ window.planeWebLiveMap = (() => {
             setTimeout(() => {
                 if (!map) return;
                 if (e.name === 'Satellite' && store.get(LABELS_KEY) !== '0') labelsLayer.addTo(map);
-                else if (e.name !== 'Satellite' && map.hasLayer(labelsLayer)) map.removeLayer(labelsLayer);
+                else if (e.name !== 'Satellite' && map.hasLayer(labelsLayer)) {
+                    autoLabels = true; // automatic removal must not overwrite the user's preference
+                    map.removeLayer(labelsLayer);
+                    autoLabels = false;
+                }
             }, 0);
         });
         map.on('overlayadd overlayremove', e => {
-            if (e.layer === labelsLayer) store.set(LABELS_KEY, e.type === 'overlayadd' ? '1' : '0');
+            if (e.layer === labelsLayer && !autoLabels) store.set(LABELS_KEY, e.type === 'overlayadd' ? '1' : '0');
         });
 
         button('⤢', 'Fit to area', fit).addTo(map);
@@ -218,16 +222,20 @@ window.planeWebLiveMap = (() => {
 
             const marker = L.marker([a.lat, a.lon], {
                 icon: L.divIcon({ html: el, className: 'fw-plane-icon', iconSize: [28, 28], iconAnchor: [14, 14] }),
-                keyboard: false,
+                keyboard: true, title: a.ident, alt: `Aircraft ${a.ident}`,
             }).addTo(planeLayer);
             pl = { marker, el, svg, label, data: a, recv: nowSec() };
             marker.on('click', ev => { L.DomEvent.stopPropagation(ev); select(a.hex); });
+            marker.getElement()?.addEventListener('keydown', ev => {
+                if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); ev.stopPropagation(); select(a.hex); }
+            });
             planes.set(a.hex, pl);
         }
         pl.data = a;
         pl.recv = nowSec();
         pl.marker.setLatLng([a.lat, a.lon]);
         pl.label.textContent = a.ident;
+        pl.marker.getElement()?.setAttribute('aria-label', `Aircraft ${a.ident}`);
         pl.el.classList.toggle('on-wall', !!a.wall);
         pl.el.classList.toggle('ground', !!a.ground);
         pl.svg.style.transform = `rotate(${a.trk ?? 0}deg)`;
@@ -309,7 +317,10 @@ window.planeWebLiveMap = (() => {
         if (!infoCache.has(key))
             infoCache.set(key, fetch(`/api/aircraft/${encodeURIComponent(hex)}?${params}`)
                 .then(r => r.ok ? r.json() : null).catch(() => null));
-        infoCache.get(key).then(info => { if (selected === hex) renderInfo(hex, a, info); });
+        infoCache.get(key).then(info => {
+            if (!info) infoCache.delete(key); // allow a retry on the next selection
+            if (selected === hex) renderInfo(hex, a, info);
+        });
     }
 
     function renderLive(a) {

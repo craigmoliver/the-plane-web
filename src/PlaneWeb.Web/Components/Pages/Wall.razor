@@ -36,7 +36,7 @@
                 {
                     <div class="board-row" @key="f.Aircraft.Hex">
                         <span class="ident-cell"><AirlineLogo Callsign="@f.Aircraft.Callsign" /><span class="led amber big">@Fmt.Ident(f.Aircraft)</span></span>
-                        <span class="led green">@(f.Route is { } r ? $"{r.Origin.Code}›{r.Destination.Code}" : "---›---")</span>
+                        <span class="led green route-cell" title="@RouteTitle(f.Route)">@(f.Route is { } r ? $"{r.Origin.Code}›{r.Destination.Code}" : "---›---")</span>
                         <span class="led white small">@Fmt.Type(f.Aircraft)</span>
                         <span class="led cyan">@Fmt.Climb(f.Aircraft.VerticalRateFpm) @Fmt.Alt(f.Aircraft, s.Units)</span>
                         <span class="led cyan">@Fmt.Speed(f.Aircraft.GroundSpeedKt, s.Units)</span>
@@ -132,7 +132,10 @@
         rotateTimer = new Timer(_ => InvokeAsync(() => { pageIndex++; StateHasChanged(); }), null, period, period);
     }
 
-    private int PageCount => s is null ? 1 : Math.Max(1, (int)Math.Ceiling(snap.AreaFlights.Count / (double)s.MaxAreaFlights));
+    private static string? RouteTitle(FlightRoute? r) =>
+        r is null ? null : string.Join(" → ", r.Stops.Select(a => $"{a.Code} – {a.City ?? a.Name}"));
+
+    private int PageCount => s is null || !s.AutoPage ? 1 : Math.Max(1, (int)Math.Ceiling(snap.AreaFlights.Count / (double)s.MaxAreaFlights));
 
     private IReadOnlyList<FlightView> AreaPage()
     {

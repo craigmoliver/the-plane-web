@@ -178,4 +178,17 @@ public class TrailRecordingTests
         Assert.False(backfill.Enqueue("a0000"));
         Assert.True(backfill.Enqueue("new1"));
     }
+
+    [Fact]
+    public void Enqueue_FullQueue_IsRejectedAndRetryable()
+    {
+        var opt = Microsoft.Extensions.Options.Options.Create(new PlaneWebOptions());
+        var backfill = new TraceBackfillService(
+            new AdsbLolTraceClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }),
+            new TrailStore(), opt, TimeProvider.System,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<TraceBackfillService>.Instance);
+        for (var i = 0; i < 500; i++) Assert.True(backfill.Enqueue($"h{i}"));
+        Assert.False(backfill.Enqueue("overflow"));   // queue full: not recorded as attempted
+        Assert.False(backfill.Enqueue("h0"));         // already queued
+    }
 }

@@ -69,4 +69,38 @@ public class AircraftInfoTests
         Assert.Equal(["/pub/photos/reg/N935AT"], ps.Paths);
         Assert.Null(await svc.GetAsync("../etc", null, default));
     }
+
+    private sealed class Failing : HttpMessageHandler
+    {
+        public int Calls;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage r, CancellationToken ct)
+        {
+            Interlocked.Increment(ref Calls);
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.NotFound));
+        }
+    }
+
+    [Fact]
+    public async Task FailedLookupWithRegistrationHint_UsesShortCacheLifetime()
+    {
+        var time = new ManualTime(DateTimeOffset.Parse("2026-10-03T12:00:00Z"));
+        var db = new Failing();
+        var svc = new AircraftInfoService(
+            new HttpClient(db) { BaseAddress = new Uri("https://db/") },
+            new HttpClient(new Failing()) { BaseAddress = new Uri("https://ps/") },
+            time, Microsoft.Extensions.Logging.Abstractions.NullLogger<AircraftInfoService>.Instance);
+
+        var r = await svc.GetAsync("abc123", "N1", default);
+        Assert.Equal("N1", r!.Registration);
+        Assert.False(r.Found);
+        time.Now += TimeSpan.FromMinutes(31);
+        await svc.GetAsync("abc123", "N1", default);
+        Assert.Equal(2, db.Calls); // retried after the 30-minute failure window, not 12 hours
+    }
+
+    private sealed class ManualTime(DateTimeOffset start) : TimeProvider
+    {
+        public DateTimeOffset Now = start;
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
 }

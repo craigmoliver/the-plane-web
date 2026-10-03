@@ -67,6 +67,7 @@
                     <label class="check"><input type="checkbox" @bind="s.IncludeLight" /> Include light / private aircraft</label>
                     <label class="check"><input type="checkbox" @bind="s.IncludeGround" /> Include aircraft on the ground</label>
                     <label>Flights per page <input type="number" min="1" max="20" @bind="s.MaxAreaFlights" /></label>
+                    <label class="check"><input type="checkbox" @bind="s.AutoPage" /> Page through all aircraft (off = show only the nearest page)</label>
                 }
                 else
                 {
@@ -98,7 +99,7 @@
 
                 <h2>Display</h2>
                 <div class="row">
-                    <label>Rotate every (s) <input type="number" min="3" max="120" @bind="s.RotateSeconds" /></label>
+                    <label>Rotate pages every (s) <input type="number" min="3" max="120" @bind="s.RotateSeconds" /></label>
                     <label>Units
                         <select @bind="s.Units">
                             <option value="@UnitSystem.Imperial">Imperial (ft, mph, mi)</option>

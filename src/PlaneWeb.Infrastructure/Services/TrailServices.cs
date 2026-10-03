@@ -1,3 +1,4 @@
+using PlaneWeb.Core;
 using System.Threading.Channels;
 using PlaneWeb.Infrastructure.Providers;
 using Microsoft.Extensions.Hosting;
@@ -20,7 +21,7 @@ public sealed class TraceBackfillService(
     private static readonly TimeSpan RetryAfter = TimeSpan.FromHours(1);
     private static readonly TimeSpan RateLimitPause = TimeSpan.FromSeconds(60);
     private readonly Channel<string> _queue = Channel.CreateBounded<string>(
-        new BoundedChannelOptions(500) { FullMode = BoundedChannelFullMode.DropWrite, SingleReader = true });
+        new BoundedChannelOptions(500) { FullMode = BoundedChannelFullMode.Wait, SingleReader = true });
     private readonly Dictionary<string, DateTimeOffset> _attempted = new(StringComparer.OrdinalIgnoreCase);
     private readonly Lock _lock = new();
 
@@ -31,12 +32,14 @@ public sealed class TraceBackfillService(
         lock (_lock)
         {
             if (_attempted.TryGetValue(hex, out var at) && now - at < RetryAfter) return false;
+            // Only count work the queue accepted; if it is full, a later poll will try again.
+            if (!_queue.Writer.TryWrite(hex)) return false;
             _attempted[hex] = now;
             if (_attempted.Count > 5000)
                 foreach (var k in _attempted.Where(kv => now - kv.Value >= RetryAfter).Select(kv => kv.Key).ToList())
                     _attempted.Remove(k);
         }
-        return _queue.Writer.TryWrite(hex);
+        return true;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -76,6 +79,7 @@ public sealed class TraceBackfillService(
 /// <summary>Loads trails at startup, saves them every minute and on shutdown.</summary>
 public sealed class TrailPersistenceService(
     TrailStore trails,
+    SettingsService settings,
     IOptions<PlaneWebOptions> options,
     TimeProvider time,
     ILogger<TrailPersistenceService> log) : BackgroundService
@@ -88,6 +92,9 @@ public sealed class TrailPersistenceService(
         {
             if (File.Exists(Path))
             {
+                // Apply the saved path length first so restoring doesn't trim to the default window.
+                var s = await settings.GetAsync(ct);
+                trails.Window = TimeSpan.FromMinutes(Math.Clamp(s.TrailMinutes, 1, WallSettings.MaxTrailMinutes));
                 var kept = trails.Load(await File.ReadAllTextAsync(Path, ct), time.GetUtcNow());
                 log.LogInformation("Restored {Count} flight trails from {Path}", kept, Path);
             }
