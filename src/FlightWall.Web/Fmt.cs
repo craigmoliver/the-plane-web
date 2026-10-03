@@ -34,7 +34,7 @@ public static class Fmt
     public static string Eta(DateTimeOffset? eta, DateTimeOffset now)
     {
         if (eta is not { } e) return "--:--";
-        var mins = (int)Math.Round((e - now).TotalMinutes);
-        return mins < 60 ? $"{Math.Max(0, mins)} MIN" : $"{mins / 60}H {mins % 60:00}M";
+        var mins = Math.Max(0, (int)Math.Round((e - now).TotalMinutes));
+        return mins < 60 ? $"{mins} MIN" : $"{mins / 60}H {mins % 60:00}M";
     }
 }

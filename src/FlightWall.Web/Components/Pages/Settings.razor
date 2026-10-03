@@ -75,7 +75,7 @@
                     <ul class="tracked">
                         @foreach (var f in s.TrackedFlights)
                         {
-                            <li><span class="mono">@f</span> <button class="btn small" @onclick="() => s.TrackedFlights.Remove(f)">✕</button></li>
+                            <li><span class="mono">@f</span> <button class="btn small" aria-label="@($"Remove flight {f}")" title="@($"Remove {f}")" @onclick="() => s.TrackedFlights.Remove(f)">✕</button></li>
                         }
                     </ul>
                     @if (s.TrackedFlights.Count < WallSettings.MaxTracked)
@@ -189,7 +189,8 @@
     public async Task OnPolygonDrawn(string json)
     {
         s!.PolygonJson = json;
-        if (s.Polygon.Count >= 3) s.Shape = AreaShape.Polygon;
+        // Keep the selected shape in sync with what the poller will actually use.
+        s.Shape = s.Polygon.Count >= 3 ? AreaShape.Polygon : AreaShape.Radius;
         await UpdateMap();
         StateHasChanged();
     }

@@ -65,30 +65,30 @@ public sealed class AdsbLolProvider(HttpClient http) : IFlightDataProvider
 {
     public string Name => "adsb.lol";
 
-    public async Task<IReadOnlyList<Aircraft>> GetAircraftNearAsync(GeoPoint c, double radiusNm, CancellationToken ct)
+    public async Task<ProviderResult> GetAircraftNearAsync(GeoPoint c, double radiusNm, CancellationToken ct)
     {
         var r = (int)Math.Clamp(Math.Ceiling(radiusNm), 1, 250);
-        return ReadsbParser.Parse(await http.GetStringAsync(
-            $"v2/point/{ReadsbParser.F(c.Lat)}/{ReadsbParser.F(c.Lon)}/{r}", ct));
+        return new(ReadsbParser.Parse(await http.GetStringAsync(
+            $"v2/point/{ReadsbParser.F(c.Lat)}/{ReadsbParser.F(c.Lon)}/{r}", ct)), Name);
     }
 
-    public async Task<IReadOnlyList<Aircraft>> GetByCallsignAsync(string callsign, CancellationToken ct) =>
-        ReadsbParser.Parse(await http.GetStringAsync($"v2/callsign/{Uri.EscapeDataString(callsign)}", ct));
+    public async Task<ProviderResult> GetByCallsignAsync(string callsign, CancellationToken ct) =>
+        new(ReadsbParser.Parse(await http.GetStringAsync($"v2/callsign/{Uri.EscapeDataString(callsign)}", ct)), Name);
 }
 
 public sealed class AdsbFiProvider(HttpClient http) : IFlightDataProvider
 {
     public string Name => "adsb.fi";
 
-    public async Task<IReadOnlyList<Aircraft>> GetAircraftNearAsync(GeoPoint c, double radiusNm, CancellationToken ct)
+    public async Task<ProviderResult> GetAircraftNearAsync(GeoPoint c, double radiusNm, CancellationToken ct)
     {
         var r = (int)Math.Clamp(Math.Ceiling(radiusNm), 1, 250);
-        return ReadsbParser.Parse(await http.GetStringAsync(
-            $"api/v2/lat/{ReadsbParser.F(c.Lat)}/lon/{ReadsbParser.F(c.Lon)}/dist/{r}", ct));
+        return new(ReadsbParser.Parse(await http.GetStringAsync(
+            $"api/v2/lat/{ReadsbParser.F(c.Lat)}/lon/{ReadsbParser.F(c.Lon)}/dist/{r}", ct)), Name);
     }
 
-    public async Task<IReadOnlyList<Aircraft>> GetByCallsignAsync(string callsign, CancellationToken ct) =>
-        ReadsbParser.Parse(await http.GetStringAsync($"api/v2/callsign/{Uri.EscapeDataString(callsign)}", ct));
+    public async Task<ProviderResult> GetByCallsignAsync(string callsign, CancellationToken ct) =>
+        new(ReadsbParser.Parse(await http.GetStringAsync($"api/v2/callsign/{Uri.EscapeDataString(callsign)}", ct)), Name);
 }
 
 /// <summary>Tries each provider in order until one succeeds.</summary>
@@ -96,25 +96,22 @@ public sealed class FallbackFlightDataProvider(IEnumerable<IFlightDataProvider> 
     Microsoft.Extensions.Logging.ILogger<FallbackFlightDataProvider> log) : IFlightDataProvider
 {
     private readonly IFlightDataProvider[] _providers = providers.ToArray();
-    public string Name => LastUsed ?? _providers.FirstOrDefault()?.Name ?? "none";
-    public string? LastUsed { get; private set; }
+    public string Name => string.Join("/", _providers.Select(p => p.Name));
 
-    public Task<IReadOnlyList<Aircraft>> GetAircraftNearAsync(GeoPoint c, double r, CancellationToken ct) =>
+    public Task<ProviderResult> GetAircraftNearAsync(GeoPoint c, double r, CancellationToken ct) =>
         Try(p => p.GetAircraftNearAsync(c, r, ct));
 
-    public Task<IReadOnlyList<Aircraft>> GetByCallsignAsync(string cs, CancellationToken ct) =>
+    public Task<ProviderResult> GetByCallsignAsync(string cs, CancellationToken ct) =>
         Try(p => p.GetByCallsignAsync(cs, ct));
 
-    private async Task<IReadOnlyList<Aircraft>> Try(Func<IFlightDataProvider, Task<IReadOnlyList<Aircraft>>> f)
+    private async Task<ProviderResult> Try(Func<IFlightDataProvider, Task<ProviderResult>> f)
     {
         Exception? last = null;
         foreach (var p in _providers)
         {
             try
             {
-                var result = await f(p);
-                LastUsed = p.Name;
-                return result;
+                return await f(p);
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)

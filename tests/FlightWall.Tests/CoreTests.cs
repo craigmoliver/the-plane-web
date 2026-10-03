@@ -97,6 +97,17 @@ public class CallsignNormalizerTests
     public void Normalize(string input, string expected) => Assert.Equal(expected, CallsignNormalizer.Normalize(input));
 }
 
+public class FmtTests
+{
+    [Fact]
+    public void Eta_NeverNegative()
+    {
+        var now = DateTimeOffset.Parse("2026-01-01T12:00:00Z");
+        Assert.Equal("0 MIN", FlightWall.Web.Fmt.Eta(now.AddHours(-3), now));
+        Assert.Equal("1H 30M", FlightWall.Web.Fmt.Eta(now.AddMinutes(90), now));
+    }
+}
+
 public class AirlineIcaoTests
 {
     [Theory]

@@ -31,7 +31,9 @@ public sealed partial class AirlineLogoService(HttpClient http, string cacheDir,
         await gate.WaitAsync(ct);
         try
         {
+            // Re-check both caches: requests queued behind the first one must not refetch.
             if (File.Exists(path)) return path;
+            if (_misses.TryGetValue(icao, out until) && until > DateTimeOffset.UtcNow) return null;
             using var resp = await http.GetAsync($"{icao}.png", ct);
             if (resp.StatusCode == HttpStatusCode.NotFound)
             {

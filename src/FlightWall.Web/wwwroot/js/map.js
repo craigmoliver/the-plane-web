@@ -62,8 +62,11 @@ window.flightWallMap = (() => {
         if (!aircraftLayer) return;
         aircraftLayer.clearLayers();
         for (const a of list) {
+            // Feed values are untrusted: render as text, never HTML.
+            const label = document.createElement('span');
+            label.textContent = a.label;
             L.circleMarker([a.lat, a.lon], { radius: 4, color: '#39ff14', fillOpacity: 0.9, weight: 1 })
-                .bindTooltip(a.label).addTo(aircraftLayer);
+                .bindTooltip(label).addTo(aircraftLayer);
         }
     }
 
