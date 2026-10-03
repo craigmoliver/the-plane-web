@@ -200,7 +200,8 @@ window.planeWebLiveMap = (() => {
             L.polyline(run.ll, { renderer, color: run.color, weight, opacity: run.op, interactive: false, lineCap: 'round' }).addTo(e.group); };
         for (let i = 1; i < pts.length; i++) {
             const a = pts[i - 1], b = pts[i];
-            if (b[0] - a[0] > GAP_BREAK_SEC) { flush(); run = null; continue; }
+            // Break on long time gaps, and at the antimeridian so Leaflet doesn't draw across the whole world.
+            if (b[0] - a[0] > GAP_BREAK_SEC || Math.abs(b[2] - a[2]) > 180) { flush(); run = null; continue; }
             const age = (nowSec() - b[0]) / windowSec;
             const op = Math.round((0.15 + 0.85 * Math.max(0, 1 - age)) * dim * 10) / 10;
             const key = `${altBucket(b[3])}|${op}`;
