@@ -1,7 +1,7 @@
 @using FlightWall.Core
 @if (Icao is { } icao)
 {
-    <img class="airline-logo @Class" src="/logos/@(icao).png" alt="@icao" loading="lazy"
+    <img class="airline-logo @Class" src="/logos/@(icao).png" alt="" aria-hidden="true" loading="lazy"
          onerror="this.style.visibility='hidden'" />
 }
 else
