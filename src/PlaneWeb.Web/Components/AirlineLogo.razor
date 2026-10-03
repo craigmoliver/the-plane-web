@@ -1,0 +1,66 @@
+@using PlaneWeb.Core
+@implements IDisposable
+@if (icao is not null && interactive)
+{
+    @* Decorative: the adjacent callsign identifies the flight. Failures are tracked by the component
+       (not a DOM style), so a transient error is retried with backoff instead of hiding the logo forever. *@
+    <img class="airline-logo @Class @(failed ? "failed" : "")" src="@Src" alt="" aria-hidden="true" loading="lazy"
+         @onerror="OnError" @onload="OnLoad" />
+}
+else
+{
+    <span class="airline-logo empty @Class"></span>
+}
+
+@code {
+    [Parameter] public string? Callsign { get; set; }
+    [Parameter] public string? Class { get; set; }
+
+    /// <summary>Retry delay for a given failure count: 30s, 60s, 120s ... capped at 10 min.</summary>
+    public static TimeSpan RetryDelay(int failures) =>
+        TimeSpan.FromSeconds(Math.Min(600, 30 * Math.Pow(2, Math.Max(0, failures - 1))));
+
+    private string? icao;
+    private bool failed;
+    private int failures;
+    private int attempt;
+    private Timer? retry;
+    // Render the <img> only once interactive: errors during prerender fire before handlers attach and would be lost.
+    private bool interactive;
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (!firstRender) return;
+        interactive = true;
+        StateHasChanged();
+    }
+
+    private string Src => attempt == 0 ? $"/logos/{icao}.png" : $"/logos/{icao}.png?r={attempt}";
+
+    protected override void OnParametersSet()
+    {
+        var next = CallsignNormalizer.AirlineIcao(Callsign);
+        if (next == icao) return;
+        icao = next;
+        failed = false; failures = 0; attempt = 0;
+        retry?.Dispose(); retry = null;
+    }
+
+    private void OnError()
+    {
+        failed = true;
+        failures++;
+        retry?.Dispose();
+        var due = RetryDelay(failures);
+        retry = new Timer(_ => InvokeAsync(() => { attempt++; StateHasChanged(); }), null, due, Timeout.InfiniteTimeSpan);
+    }
+
+    private void OnLoad()
+    {
+        if (!failed && failures == 0) return;
+        failed = false; failures = 0;
+        retry?.Dispose(); retry = null;
+    }
+
+    public void Dispose() => retry?.Dispose();
+}

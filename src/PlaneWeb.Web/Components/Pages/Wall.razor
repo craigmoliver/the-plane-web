@@ -1,0 +1,168 @@
+@page "/wall"
+@using PlaneWeb.Core
+@using PlaneWeb.Infrastructure.Services
+@implements IDisposable
+@inject FlightStateStore Store
+@inject SettingsService SettingsSvc
+@inject IJSRuntime JS
+
+<PageTitle>@(s?.Title ?? "The Plane Web")</PageTitle>
+
+<div class="wall" @ondblclick="Fullscreen" title="Double-click for fullscreen">
+    <div class="wall-header">
+        <span class="led amber">@(s?.Title ?? "THE PLANE WEB")</span>
+        <span class="led dim">@(snap.Mode == DisplayMode.Area ? "AREA" : "TRACKING")</span>
+        <span class="led green">@DateTime.Now.ToString("HH:mm:ss")</span>
+    </div>
+
+    @if (s is null || snap.UpdatedAt == DateTimeOffset.MinValue)
+    {
+        <div class="wall-empty led amber blink">ACQUIRING SIGNAL…</div>
+    }
+    else if (snap.Mode == DisplayMode.Area)
+    {
+        var page = AreaPage();
+        if (page.Count == 0)
+        {
+            <div class="wall-empty led dim">NO AIRCRAFT IN RANGE</div>
+        }
+        else
+        {
+            <div class="board">
+                <div class="board-row board-head led dim">
+                    <span>FLIGHT</span><span>ROUTE</span><span>TYPE</span><span>ALT</span><span>SPD</span><span>DIST</span>
+                </div>
+                @foreach (var f in page)
+                {
+                    <div class="board-row" @key="f.Aircraft.Hex">
+                        <span class="ident-cell"><AirlineLogo Callsign="@f.Aircraft.Callsign" /><span class="led amber big">@Fmt.Ident(f.Aircraft)</span></span>
+                        <span class="led green">@(f.Route is { } r ? $"{r.Origin.Code}›{r.Destination.Code}" : "---›---")</span>
+                        <span class="led white small">@Fmt.Type(f.Aircraft)</span>
+                        <span class="led cyan">@Fmt.Climb(f.Aircraft.VerticalRateFpm) @Fmt.Alt(f.Aircraft, s.Units)</span>
+                        <span class="led cyan">@Fmt.Speed(f.Aircraft.GroundSpeedKt, s.Units)</span>
+                        <span class="led white">@Fmt.Dist(f.DistanceNm, s.Units) @(f.BearingDeg is { } b ? Geo.CompassPoint(b) : "")</span>
+                    </div>
+                }
+            </div>
+            @if (PageCount > 1)
+            {
+                <div class="pager">@for (var i = 0; i < PageCount; i++) { <span class="@(i == pageIndex % PageCount ? "on" : "")"></span> }</div>
+            }
+        }
+    }
+    else
+    {
+        var t = TrackedCurrent();
+        if (t is null)
+        {
+            <div class="wall-empty led dim">NO FLIGHTS CONFIGURED — VISIT /SETTINGS</div>
+        }
+        else
+        {
+            <div class="flight-card" @key="t.Callsign">
+                <div class="fc-ident">
+                    <span class="ident-cell"><AirlineLogo Callsign="@t.Callsign" Class="large" /><span class="led amber huge">@t.Callsign</span></span>
+                    @if (t.Live is { } lv)
+                    {
+                        <span class="led white small">@Fmt.Type(lv.Aircraft) @(lv.Aircraft.Registration is { } reg ? $"· {reg}" : "")</span>
+                    }
+                </div>
+                @if (t.Live is not { } v)
+                {
+                    <div class="led dim big">NOT CURRENTLY TRACKED IN THE AIR</div>
+                }
+                else
+                {
+                    <div class="fc-route">
+                        <div class="fc-ap">
+                            <span class="led green huge">@(v.Route?.Origin.Code ?? "???")</span>
+                            <span class="led dim small">@(v.Route?.Origin.City ?? v.Route?.Origin.Name)</span>
+                        </div>
+                        <div class="fc-progress">
+                            <div class="track"><div class="fill" style="width:@Pct(v.Progress)"></div><div class="plane" style="left:@Pct(v.Progress)">✈</div></div>
+                        </div>
+                        <div class="fc-ap right">
+                            <span class="led green huge">@(v.Route?.Destination.Code ?? "???")</span>
+                            <span class="led dim small">@(v.Route?.Destination.City ?? v.Route?.Destination.Name)</span>
+                        </div>
+                    </div>
+                    <div class="fc-stats">
+                        <div><span class="led dim small">ALTITUDE</span><span class="led cyan">@Fmt.Climb(v.Aircraft.VerticalRateFpm) @Fmt.Alt(v.Aircraft, s.Units)</span></div>
+                        <div><span class="led dim small">SPEED</span><span class="led cyan">@Fmt.Speed(v.Aircraft.GroundSpeedKt, s.Units)</span></div>
+                        <div><span class="led dim small">HEADING</span><span class="led cyan">@Fmt.Heading(v.Aircraft.TrackDeg)</span></div>
+                        <div><span class="led dim small">REMAINING</span><span class="led white">@Fmt.Dist(v.RemainingNm, s.Units)</span></div>
+                        <div><span class="led dim small">ETA (EST)</span><span class="led amber">@Fmt.Eta(v.EstimatedArrival, DateTimeOffset.UtcNow)</span></div>
+                    </div>
+                }
+            </div>
+            @if (snap.Tracked.Count > 1)
+            {
+                <div class="pager">@for (var i = 0; i < snap.Tracked.Count; i++) { <span class="@(i == pageIndex % snap.Tracked.Count ? "on" : "")"></span> }</div>
+            }
+        }
+    }
+
+    <div class="wall-footer led dim small">
+        @if (snap.Error is not null) { <span class="led red">⚠ @snap.Error</span> }
+        <span>DATA: @(snap.Source ?? "—") · UPDATED @(snap.UpdatedAt == DateTimeOffset.MinValue ? "—" : snap.UpdatedAt.ToLocalTime().ToString("HH:mm:ss"))</span>
+        <span><a href="/map">MAP</a> · <a href="/settings">SETTINGS</a></span>
+    </div>
+</div>
+
+@code {
+    private WallSettings? s;
+    private WallSnapshot snap = WallSnapshot.Empty;
+    private int pageIndex;
+    private Timer? rotateTimer, clockTimer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        s = await SettingsSvc.GetAsync();
+        snap = Store.Current;
+        Store.Updated += OnSnapshot;
+        SettingsSvc.Changed += OnSettings;
+        StartRotation();
+        clockTimer = new Timer(_ => InvokeAsync(StateHasChanged), null, 1000, 1000);
+    }
+
+    private void StartRotation()
+    {
+        rotateTimer?.Dispose();
+        var period = TimeSpan.FromSeconds(Math.Max(3, s?.RotateSeconds ?? 8));
+        rotateTimer = new Timer(_ => InvokeAsync(() => { pageIndex++; StateHasChanged(); }), null, period, period);
+    }
+
+    private int PageCount => s is null ? 1 : Math.Max(1, (int)Math.Ceiling(snap.AreaFlights.Count / (double)s.MaxAreaFlights));
+
+    private IReadOnlyList<FlightView> AreaPage()
+    {
+        var size = s!.MaxAreaFlights;
+        return snap.AreaFlights.Skip(pageIndex % PageCount * size).Take(size).ToList();
+    }
+
+    private TrackedFlightView? TrackedCurrent() =>
+        snap.Tracked.Count == 0 ? null : snap.Tracked[pageIndex % snap.Tracked.Count];
+
+    private static string Pct(double? p) =>
+        $"{Math.Clamp((p ?? 0) * 100, 0, 100).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)}%";
+
+    private void OnSnapshot(WallSnapshot next) => InvokeAsync(() => { snap = next; StateHasChanged(); });
+
+    private void OnSettings(WallSettings next) => InvokeAsync(() =>
+    {
+        s = next;
+        pageIndex = 0;
+        StartRotation();
+        StateHasChanged();
+    });
+
+    private async Task Fullscreen() => await JS.InvokeVoidAsync("planeWebMap.requestFullscreen");
+
+    public void Dispose()
+    {
+        Store.Updated -= OnSnapshot;
+        SettingsSvc.Changed -= OnSettings;
+        rotateTimer?.Dispose();
+        clockTimer?.Dispose();
+    }
+}
