@@ -42,9 +42,9 @@ public sealed class FlightPollingService(
     /// <summary>Polls once and records every mapped aircraft's position into the trail store.</summary>
     public async Task<WallSnapshot> PollAndRecordAsync(WallSettings s, CancellationToken ct)
     {
+        backfill.Enabled = s.TraceBackfill; // before polling, so an outage can't delay disabling it
         var snap = await PollAsync(s, ct);
         var now = time.GetUtcNow();
-        backfill.Enabled = s.TraceBackfill;
         trails.Window = TimeSpan.FromMinutes(Math.Clamp(s.TrailMinutes, 1, WallSettings.MaxTrailMinutes));
         foreach (var a in snap.MapAircraft)
         {

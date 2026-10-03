@@ -112,6 +112,24 @@ public class AircraftInfoTests
         Assert.Contains("/pub/photos/reg/N1", ps.Paths);
     }
 
+    private sealed class RegMissHexHit : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage r, CancellationToken ct) =>
+            Task.FromResult(r.RequestUri!.AbsolutePath.Contains("/reg/")
+                ? new HttpResponseMessage(System.Net.HttpStatusCode.NotFound)
+                : new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(Spotters) });
+    }
+
+    [Fact]
+    public async Task RegistrationPhoto404_FallsBackToHex()
+    {
+        var svc = new AircraftInfoService(
+            new HttpClient(new Handler(Adsbdb)) { BaseAddress = new Uri("https://db/") },
+            new HttpClient(new RegMissHexHit()) { BaseAddress = new Uri("https://ps/") },
+            TimeProvider.System, Microsoft.Extensions.Logging.Abstractions.NullLogger<AircraftInfoService>.Instance);
+        Assert.NotNull((await svc.GetAsync("acf84e", null, default))!.Photo);
+    }
+
     private sealed class ManualTime(DateTimeOffset start) : TimeProvider
     {
         public DateTimeOffset Now = start;

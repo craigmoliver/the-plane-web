@@ -86,14 +86,23 @@ public sealed class AircraftInfoService(HttpClient adsbdb, HttpClient planespott
         {
             var path = info.Registration is { Length: > 0 } reg
                 ? $"pub/photos/reg/{Uri.EscapeDataString(reg)}" : $"pub/photos/hex/{hex}";
-            var photo = ParsePlanespotters(await planespotters.GetStringAsync(path, photoCts.Token));
+            var photo = await GetPhotoAsync(path, photoCts.Token);
             if (photo is null && info.Registration is not null)
-                photo = ParsePlanespotters(await planespotters.GetStringAsync($"pub/photos/hex/{hex}", photoCts.Token));
+                photo = await GetPhotoAsync($"pub/photos/hex/{hex}", photoCts.Token);
             info = info with { Photo = photo, Found = info.Found || photo is not null };
         }
         catch (Exception ex) when (ex is not OperationCanceledException || photoCts.IsCancellationRequested)
         { log.LogDebug(ex, "planespotters lookup failed for {Hex}", hex); }
         return info;
+    }
+
+    /// <summary>A 404 is a normal "no photo" answer, so it returns null instead of throwing (letting fallbacks run).</summary>
+    private async Task<AircraftPhoto?> GetPhotoAsync(string path, CancellationToken ct)
+    {
+        using var resp = await planespotters.GetAsync(path, ct);
+        if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) return null;
+        resp.EnsureSuccessStatusCode();
+        return ParsePlanespotters(await resp.Content.ReadAsStringAsync(ct));
     }
 
     public static AircraftInfo? ParseAdsbdb(string hex, string json)

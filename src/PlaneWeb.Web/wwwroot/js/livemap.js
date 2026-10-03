@@ -231,8 +231,12 @@ window.planeWebLiveMap = (() => {
             });
             planes.set(a.hex, pl);
         }
+        const prev = pl.data;
         pl.data = a;
-        if (pl.recv !== asOf) { // new position report: restart the glide from it
+        // Restart the glide only for a new position (or when it stops moving); a repeated position
+        // keeps its original timestamp so the extrapolation cap still applies.
+        const moved = prev.lat !== a.lat || prev.lon !== a.lon || !a.gs || a.ground;
+        if (pl.recv !== asOf && moved) {
             pl.recv = asOf;
             pl.marker.setLatLng([a.lat, a.lon]);
         }
