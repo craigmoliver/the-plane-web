@@ -344,4 +344,30 @@ public class PollerRegistryTests
         using var b = reg.Acquire(new WallSettings { TrailMinutes = 60 });
         Assert.Same(a.Store, b.Store);
     }
+
+    [Fact]
+    public void PollKey_IgnoresInactiveFields()
+    {
+        var circleA = new WallSettings { Shape = AreaShape.Radius, PolygonJson = "[[1,1],[1,2],[2,2]]", TrackedFlights = ["X1"] };
+        var circleB = new WallSettings { Shape = AreaShape.Radius, PolygonJson = "[]", TrackedFlights = [] };
+        Assert.Equal(PollerRegistry.KeyFor(circleA), PollerRegistry.KeyFor(circleB));
+        Assert.NotEqual(PollerRegistry.KeyFor(circleA), PollerRegistry.KeyFor(new WallSettings { RadiusNm = 5 }));
+        var poly = new WallSettings { Shape = AreaShape.Polygon, PolygonJson = "[[34,-85],[34,-84],[35,-84]]" };
+        Assert.Equal(PollerRegistry.KeyFor(poly), PollerRegistry.KeyFor(new WallSettings { Shape = AreaShape.Polygon, PolygonJson = poly.PolygonJson, RadiusNm = 99 }));
+    }
+
+    [Fact]
+    public async Task FindLive_RanksByObservationTime()
+    {
+        using var db = new TestDb();
+        var (reg, time, _) = Build(db, new Counting());
+        using var flights = reg.Acquire(new WallSettings { CenterLat = 1 });
+        using var area = reg.Acquire(new WallSettings { CenterLat = 2 });
+        await WaitFor(() => flights.Store.Current.UpdatedAt != DateTimeOffset.MinValue && area.Store.Current.UpdatedAt != DateTimeOffset.MinValue);
+        var t0 = time.Now;
+        // Flights snapshot stamped t0 (earliest fetch) but contains B observed at t0+10.
+        flights.Store.Publish(new WallSnapshot { UpdatedAt = t0, MapAircraft = [new Aircraft { Hex = "b", Callsign = "NEW1", ObservedAt = t0.AddSeconds(10) }] });
+        area.Store.Publish(new WallSnapshot { UpdatedAt = t0.AddSeconds(5), MapAircraft = [new Aircraft { Hex = "b", Callsign = "OLD1", ObservedAt = t0.AddSeconds(5) }] });
+        Assert.Equal("NEW1", reg.FindLive("b")!.Callsign);
+    }
 }

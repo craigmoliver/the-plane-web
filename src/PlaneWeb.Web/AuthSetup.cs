@@ -17,6 +17,7 @@ namespace PlaneWeb.Web;
 public static class AuthSetup
 {
     public const string MustChangePasswordClaim = "pw_change";
+    public const string ExternalAccountClaim = "external";
     public const string LoginRateLimit = "login";
     /// <summary>Signed in, even with a temporary password (only for changing it).</summary>
     public const string SignedInPolicy = "SignedIn";
@@ -210,6 +211,7 @@ public sealed class AppClaimsFactory(UserManager<AppUser> users, RoleManager<Ide
         var id = await base.GenerateClaimsAsync(user);
         if (!string.IsNullOrWhiteSpace(user.DisplayName)) id.AddClaim(new Claim("display_name", user.DisplayName));
         if (user.MustChangePassword) id.AddClaim(new Claim(AuthSetup.MustChangePasswordClaim, "1"));
+        if (user.IsExternal) id.AddClaim(new Claim(AuthSetup.ExternalAccountClaim, "1"));
         return id;
     }
 }

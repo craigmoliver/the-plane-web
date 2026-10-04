@@ -59,15 +59,24 @@ public sealed class PollerRegistry(
     public int ActiveCount => _pollers.Count;
 
     /// <summary>Identity of a poll: everything that changes what is fetched or filtered.</summary>
-    public static string KeyFor(WallSettings s) => System.Text.Json.JsonSerializer.Serialize(new
+    public static string KeyFor(WallSettings s)
     {
-        s.Mode, s.Shape, s.CenterLat, s.CenterLon, s.RadiusNm, s.PolygonJson,
-        Tracked = s.Mode == DisplayMode.Flights ? s.TrackedFlights : [],
-        s.MinAltitudeFt, s.MaxAltitudeFt, s.IncludeGround, s.IncludeHelicopters, s.IncludeLight,
-        s.MaxAreaFlights, s.TraceBackfill,
+        // Only fields that are actually in effect, so unused leftovers (a polygon drawn earlier, a radius
+        // while in polygon mode, tracked flights in area mode) don't split otherwise identical polls.
+        var area = s.Mode == DisplayMode.Area;
+        var polygon = area && s.Shape == AreaShape.Polygon && s.Polygon.Count >= 3;
+        return System.Text.Json.JsonSerializer.Serialize(new
+        {
+            s.Mode, s.CenterLat, s.CenterLon, // also the distance/bearing reference in every mode
+            Radius = area && !polygon ? s.RadiusNm : (double?)null,
+            Polygon = polygon ? s.PolygonJson : null,
+            Tracked = area ? [] : s.TrackedFlights,
+            Filters = area ? new { s.MinAltitudeFt, s.MaxAltitudeFt, s.IncludeGround, s.IncludeHelicopters, s.IncludeLight, s.MaxAreaFlights } : null,
+            s.TraceBackfill,
         // TrailMinutes is deliberately excluded: retention is store-wide (see ApplySharedSettings),
         // so viewers wanting different trail lengths still share one poller.
-    });
+        });
+    }
 
     public PollerLease Acquire(WallSettings s)
     {
@@ -83,9 +92,11 @@ public sealed class PollerRegistry(
     /// <summary>The live aircraft with this hex in any running area, if any.</summary>
     public Aircraft? FindLive(string hex) =>
         _pollers.Values.Select(p => p.Store.Current)
-            .OrderByDescending(s => s.UpdatedAt) // newest data wins when areas overlap
-            .SelectMany(s => s.MapAircraft)
-            .FirstOrDefault(a => string.Equals(a.Hex, hex, StringComparison.OrdinalIgnoreCase));
+            .SelectMany(s => s.MapAircraft.Select(a => (Aircraft: a, At: a.ObservedAt ?? s.UpdatedAt)))
+            .Where(x => string.Equals(x.Aircraft.Hex, hex, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(x => x.At) // the most recent observation wins when areas overlap
+            .Select(x => x.Aircraft)
+            .FirstOrDefault();
 
     /// <summary>Caller must hold <see cref="_lock"/>.</summary>
     private Poller GetOrStart(WallSettings s)
@@ -194,16 +205,24 @@ public sealed class PollerRegistry(
         }
     }
 
+    private readonly SemaphoreSlim _refreshGate = new(1, 1);
+
+    /// <summary>Serialized, so an older database read can't overwrite a newer result.</summary>
     private async Task RefreshSavedWindowAsync(CancellationToken ct)
     {
         try
         {
-            var all = await settings.GetAllAsync(ct);
-            lock (_lock)
+            await _refreshGate.WaitAsync(ct);
+            try
             {
-                _savedMaxTrailMinutes = all.Count == 0 ? 0 : all.Max(s => s.TrailMinutes);
-                ApplySharedSettings();
+                var all = await settings.GetAllAsync(ct);
+                lock (_lock)
+                {
+                    _savedMaxTrailMinutes = all.Count == 0 ? 0 : all.Max(s => s.TrailMinutes);
+                    ApplySharedSettings();
+                }
             }
+            finally { _refreshGate.Release(); }
         }
         catch (Exception ex) when (ex is not OperationCanceledException) { log.LogWarning(ex, "Could not read saved trail lengths"); }
         catch (OperationCanceledException) { }
