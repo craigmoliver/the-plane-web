@@ -247,4 +247,51 @@ public class PollerRegistryTests
         b.Store.Publish(new WallSnapshot { UpdatedAt = time.Now, MapAircraft = [new Aircraft { Hex = "x", Callsign = "NEW1" }] });
         Assert.Equal("NEW1", reg.FindLive("x")!.Callsign);
     }
+
+    private sealed class Sequenced : IFlightDataProvider
+    {
+        private int _n;
+        public string Name => "seq";
+        // Call 1 sees the aircraft at lat 34.00, call 2 (later) at 34.10.
+        public Task<ProviderResult> GetAircraftNearAsync(GeoPoint c, double r, CancellationToken ct)
+        {
+            var lat = Interlocked.Increment(ref _n) == 1 ? 34.00 : 34.10;
+            return Task.FromResult(new ProviderResult([new Aircraft { Hex = "abc", Callsign = "TST1", Lat = lat, Lon = -84.5, AltitudeFt = 9000 }], Name));
+        }
+        public Task<ProviderResult> GetByCallsignAsync(string cs, CancellationToken ct) => Task.FromResult(new ProviderResult([], Name));
+    }
+
+    private sealed class GatedRoutes : IRouteLookup
+    {
+        public readonly TaskCompletionSource Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _n;
+        public async Task<FlightRoute?> GetRouteAsync(string cs, CancellationToken ct)
+        {
+            if (Interlocked.Increment(ref _n) == 1) await Release.Task; // the first poll's enrichment is slow
+            return null;
+        }
+    }
+
+    [Fact]
+    public async Task OverlappingPolls_CompletingOutOfOrder_KeepTrailOrder()
+    {
+        var time = new ManualTime(DateTimeOffset.Parse("2026-10-04T12:00:00Z"));
+        var trails = new TrailStore();
+        var opt = Options.Create(new PlaneWebOptions());
+        var backfill = new TraceBackfillService(new AdsbLolTraceClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }),
+            trails, opt, time, NullLogger<TraceBackfillService>.Instance);
+        var routes = new GatedRoutes();
+        var poller = new FlightPollingService(new Sequenced(), routes, trails, backfill, time);
+        var area = new WallSettings { CenterLat = 34.05, CenterLon = -84.5, RadiusNm = 50, TraceBackfill = false };
+
+        var slow = poller.PollAndRecordAsync(area, default);            // fetches lat 34.00 at 12:00:00, then waits
+        time.Now += TimeSpan.FromSeconds(5);
+        await poller.PollAndRecordAsync(area, default);                 // fetches lat 34.10 at 12:00:05, records first
+        time.Now += TimeSpan.FromSeconds(5);
+        routes.Release.SetResult();
+        await slow;                                                     // completes last with the older position
+
+        var pts = trails.Get("abc")!.Points;
+        Assert.Equal([34.10], pts.Select(p => p.Lat));                 // older sample rejected, no doubling back
+    }
 }

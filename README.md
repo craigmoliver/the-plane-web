@@ -59,6 +59,7 @@ Settings are stored in SQLite at `/data/planeweb.db` and flight trails in `/data
 | `PlaneWeb__Auth__LocalLogin` | `true` | allow email/password accounts |
 | `PlaneWeb__Auth__Entra__TenantId` / `__ClientId` / `__ClientSecret` | – | Microsoft sign-in; see docs/entra.md |
 | `PlaneWeb__TrustForwardedHeaders` | `false` | `true` behind a reverse proxy |
+| `PlaneWeb__TrustedProxyNetworks` | private ranges | comma-separated CIDRs allowed to send X-Forwarded-*; keep the app's own port unreachable except via the proxy |
 | `ConnectionStrings__Default` | `Data Source=/data/planeweb.db` | |
 | `TZ` | – | wall clock timezone |
 

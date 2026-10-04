@@ -40,16 +40,16 @@ public sealed class FlightPollingService(
     public async Task<WallSnapshot> PollAndRecordAsync(WallSettings s, CancellationToken ct)
     {
         var snap = await PollAsync(s, ct);
-        var now = time.GetUtcNow();
-        // Stamp with completion time so the snapshot and the trail points it produced agree.
-        snap = snap with { UpdatedAt = now };
+        // Positions are stamped with when they were fetched, not when enrichment finished, so a slower poll
+        // of an overlapping area can't record older coordinates after newer ones (TrailStore rejects them).
+        var observed = snap.UpdatedAt;
         foreach (var a in snap.MapAircraft)
         {
-            trails.Record(a, now);
+            trails.Record(a, observed);
             // Enqueue skips hexes already tried, so this also retries ones a full queue rejected.
             if (s.TraceBackfill) backfill.Enqueue(a.Hex);
         }
-        trails.Prune(now);
+        trails.Prune(time.GetUtcNow());
         return snap;
     }
 
@@ -62,6 +62,7 @@ public sealed class FlightPollingService(
                 ? Geo.BoundingCircle(s.Polygon)
                 : (s.Center, s.RadiusNm);
             var raw = await provider.GetAircraftNearAsync(center, radius, ct);
+            var observedAt = time.GetUtcNow();
             var inArea = FlightProcessor.FilterArea(raw.Aircraft, s)
                 .OrderBy(a => Geo.DistanceNm(s.Center, a.Position!.Value))
                 .ToList();
@@ -73,7 +74,7 @@ public sealed class FlightPollingService(
             }));
             return new WallSnapshot
             {
-                Mode = DisplayMode.Area, UpdatedAt = now, Source = raw.Source,
+                Mode = DisplayMode.Area, UpdatedAt = observedAt, Source = raw.Source,
                 AreaFlights = views.OrderBy(v => v.DistanceNm).ToList(),
                 MapAircraft = inArea,
             };
@@ -83,19 +84,21 @@ public sealed class FlightPollingService(
         {
             var cs = CallsignNormalizer.Normalize(req);
             var result = await provider.GetByCallsignAsync(cs, ct);
+            var at = time.GetUtcNow();
             var found = result.Aircraft
                 .Where(a => string.Equals(a.Callsign, cs, StringComparison.OrdinalIgnoreCase))
                 .OrderByDescending(a => a.Position.HasValue)
                 .FirstOrDefault();
-            if (found is null) return (View: new TrackedFlightView(req, cs, null), result.Source);
+            if (found is null) return (View: new TrackedFlightView(req, cs, null), result.Source, At: at);
             var route = await routes.GetRouteAsync(cs, ct);
-            return (View: new TrackedFlightView(req, cs, FlightProcessor.Enrich(found, route, s.Center, now)), result.Source);
+            return (View: new TrackedFlightView(req, cs, FlightProcessor.Enrich(found, route, s.Center, now)), result.Source, At: at);
         }));
         // Report every provider that contributed to this snapshot (fallback may differ per request).
         var sources = tracked.Select(t => t.Source).Distinct().ToList();
         return new WallSnapshot
         {
-            Mode = DisplayMode.Flights, UpdatedAt = now,
+            // Earliest fetch time: conservative stamp for every position in this snapshot.
+            Mode = DisplayMode.Flights, UpdatedAt = tracked.Length == 0 ? time.GetUtcNow() : tracked.Min(t => t.At),
             Source = sources.Count == 0 ? null : string.Join(" + ", sources),
             Tracked = tracked.Select(t => t.View).ToList(),
             MapAircraft = tracked.Select(t => t.View.Live?.Aircraft).OfType<Aircraft>().Where(a => a.Position.HasValue).ToList(),

@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using System.Net;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Hosting;
@@ -188,6 +189,21 @@ public class AuthTests(AppFactory app) : IClassFixture<AppFactory>
         Assert.True(r.StatusCode == HttpStatusCode.Redirect && r.Headers.Location!.ToString().Contains("/account/login"), $"{action}: {r.StatusCode} {r.Headers.Location}");
         Assert.Equal(HttpStatusCode.Unauthorized, (await victim.GetAsync("/api/aircraft/abc123")).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await control.GetAsync("/settings")).StatusCode); // unchanged user keeps access
+    }
+
+    [Fact]
+    public void TrustedProxies_DefaultToPrivateNetworks_AndCanBeOverridden()
+    {
+        bool Trusted(IReadOnlyList<System.Net.IPNetwork> nets, string ip) => nets.Any(n => n.Contains(IPAddress.Parse(ip)));
+        var defaults = PlaneWeb.Web.AuthSetup.TrustedProxyNetworks(new Microsoft.Extensions.Configuration.ConfigurationBuilder().Build());
+        Assert.True(Trusted(defaults, "172.18.0.3"));      // Docker network (Caddy)
+        Assert.True(Trusted(defaults, "100.100.0.10"));    // Azure Container Apps internal
+        Assert.False(Trusted(defaults, "8.8.8.8"));        // the internet can't spoof headers
+
+        var custom = PlaneWeb.Web.AuthSetup.TrustedProxyNetworks(new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["PlaneWeb:TrustedProxyNetworks"] = "10.1.2.0/24" }).Build());
+        Assert.True(Trusted(custom, "10.1.2.9"));
+        Assert.False(Trusted(custom, "192.168.1.5"));
     }
 
     [Theory]

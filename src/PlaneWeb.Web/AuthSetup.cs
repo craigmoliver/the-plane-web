@@ -93,14 +93,28 @@ public static class AuthSetup
                 _ => new FixedWindowRateLimiterOptions { PermitLimit = 30, Window = TimeSpan.FromMinutes(1) }));
         });
 
-        // Behind Azure Container Apps or a reverse proxy, trust X-Forwarded-* so redirects use https.
+        // Behind Azure Container Apps or a reverse proxy, trust X-Forwarded-* so redirects use https —
+        // but only from the proxy's network. PlaneWeb:TrustedProxyNetworks overrides the private-network default.
         if (builder.Configuration.GetValue<bool>("PlaneWeb:TrustForwardedHeaders"))
             services.Configure<ForwardedHeadersOptions>(o =>
             {
                 o.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto | ForwardedHeaders.XForwardedHost;
+                o.ForwardLimit = 1; // only the nearest proxy's entry
                 o.KnownIPNetworks.Clear();
                 o.KnownProxies.Clear();
+                foreach (var n in TrustedProxyNetworks(builder.Configuration)) o.KnownIPNetworks.Add(n);
             });
+    }
+
+    /// <summary>Default: loopback and private ranges (Docker networks, Azure Container Apps' internal proxy).</summary>
+    public static readonly string[] DefaultTrustedProxyNetworks =
+        ["127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7"];
+
+    public static IReadOnlyList<System.Net.IPNetwork> TrustedProxyNetworks(IConfiguration c)
+    {
+        var configured = c.GetSection("PlaneWeb:TrustedProxyNetworks").Get<string[]>() is { Length: > 0 } list
+            ? list : (c["PlaneWeb:TrustedProxyNetworks"] is { Length: > 0 } csv ? csv.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries) : null);
+        return (configured ?? DefaultTrustedProxyNetworks).Select(System.Net.IPNetwork.Parse).ToList();
     }
 
     /// <summary>How often sessions are re-checked against the database (default 60 s; tests use 0).</summary>
