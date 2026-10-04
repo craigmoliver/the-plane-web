@@ -132,10 +132,10 @@ public class PollerRegistryTests
     private static (PollerRegistry Reg, ManualTime Time, TraceBackfillService Backfill) Build(TestDb db, IFlightDataProvider provider) =>
         Build(db, provider, new TrailStore());
 
-    private static (PollerRegistry Reg, ManualTime Time, TraceBackfillService Backfill) Build(TestDb db, IFlightDataProvider provider, TrailStore trails)
+    private static (PollerRegistry Reg, ManualTime Time, TraceBackfillService Backfill) Build(TestDb db, IFlightDataProvider provider, TrailStore trails, int pollSeconds = 60)
     {
         var time = new ManualTime(DateTimeOffset.UtcNow);
-        var opt = Options.Create(new PlaneWebOptions { PollSeconds = 60 });
+        var opt = Options.Create(new PlaneWebOptions { PollSeconds = pollSeconds });
         var backfill = new TraceBackfillService(new AdsbLolTraceClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }),
             trails, opt, time, NullLogger<TraceBackfillService>.Instance);
         var poller = new FlightPollingService(provider, new NoRoutes(), trails, backfill, time);
@@ -399,7 +399,7 @@ public class PollerRegistryTests
     public async Task FailureAfterSuccess_KeepsLastGoodTimestampAndAircraft()
     {
         using var db = new TestDb();
-        var (reg, _, _) = Build(db, new SucceedsOnceThenFails()); // poll 1 succeeds, every later poll fails
+        var (reg, _, _) = Build(db, new SucceedsOnceThenFails(), new TrailStore(), pollSeconds: 2); // poll 1 succeeds, later polls fail
         using var lease = reg.Acquire(new WallSettings { CenterLat = 34, CenterLon = -84 });
         await WaitFor(() => lease.Store.Current.UpdatedAt != DateTimeOffset.MinValue);
         var good = lease.Store.Current;
