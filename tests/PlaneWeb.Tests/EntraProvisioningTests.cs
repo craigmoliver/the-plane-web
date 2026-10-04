@@ -108,6 +108,19 @@ public class EntraProvisioningTests
     }
 
     [Fact]
+    public async Task BootstrapAdmin_ToleratesDuplicateEmails()
+    {
+        using var db = new TestDb();
+        var (sp, accounts, _) = Build(db);
+        await accounts.EnsureRolesAsync();
+        await accounts.ProvisionExternalAsync(new ExternalIdentity("o1", Tenant, "admin@corp.com", null, []), Opts());
+        await accounts.ProvisionExternalAsync(new ExternalIdentity("o2", Tenant, "admin@corp.com", null, []), Opts());
+        // Two accounts now share the email; startup must not throw.
+        await accounts.EnsureBootstrapAdminAsync(new AuthOptions { AdminEmail = "admin@corp.com", AdminPassword = "a password 123" });
+        sp.Dispose();
+    }
+
+    [Fact]
     public void TemporaryPasswords_MeetPolicy()
     {
         for (var i = 0; i < 50; i++)

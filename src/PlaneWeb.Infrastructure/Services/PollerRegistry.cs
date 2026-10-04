@@ -37,6 +37,8 @@ public sealed class PollerRegistry(
         public required string Key;
         public required WallSettings Settings;
         public readonly FlightStateStore Store = new();
+        // Never disposed: Sweep and StopAsync may both cancel it (Cancel is idempotent), and a plain
+        // source without timers or wait handles holds nothing that needs disposing.
         public readonly CancellationTokenSource Cts = new();
         public Task Worker = Task.CompletedTask;
         public int Leases;
@@ -89,8 +91,7 @@ public sealed class PollerRegistry(
         ApplySharedSettings();
         p.Worker = Task.Run(() => RunAsync(p));
         _workers[p.Worker] = 0;
-        // Dispose the token source only after the worker has exited.
-        p.Worker.ContinueWith(t => { _workers.TryRemove(t, out _); p.Cts.Dispose(); }, TaskScheduler.Default);
+        p.Worker.ContinueWith(t => _workers.TryRemove(t, out _), TaskScheduler.Default);
         return p;
     }
 
@@ -150,7 +151,7 @@ public sealed class PollerRegistry(
             {
                 if (p.Pinned || p.Leases > 0 || now - p.LastReleased < Linger) continue;
                 _pollers.TryRemove(p.Key, out _);
-                p.Cts.Cancel(); // disposed by the worker's continuation
+                p.Cts.Cancel();
             }
             ApplySharedSettings();
         }

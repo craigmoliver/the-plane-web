@@ -26,6 +26,7 @@ public abstract class UserFeedComponent : ComponentBase, IAsyncDisposable
     {
         UserId = (await AuthState).User.UserId();
         Settings = await SettingsSvc.GetAsync(UserId);
+        if (_disposed) return; // navigated away while loading: don't take a lease nobody will release
         Attach(Settings);
         SettingsSvc.Changed += OnSettingsEvent;
     }

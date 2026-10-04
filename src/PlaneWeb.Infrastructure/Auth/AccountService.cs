@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using Microsoft.AspNetCore.Identity;
@@ -73,7 +74,10 @@ public sealed class AccountService(UserManager<AppUser> users, RoleManager<Ident
     public async Task EnsureBootstrapAdminAsync(AuthOptions o)
     {
         if (string.IsNullOrWhiteSpace(o.AdminEmail) || string.IsNullOrWhiteSpace(o.AdminPassword)) return;
-        if (await users.FindByEmailAsync(o.AdminEmail) is not null) return;
+        // Emails aren't unique (work accounts may share one), so FindByEmailAsync could throw; only existence matters.
+        var normalized = users.NormalizeEmail(o.AdminEmail);
+        var normalizedName = users.NormalizeName(o.AdminEmail);
+        if (await users.Users.AnyAsync(u => u.NormalizedEmail == normalized || u.NormalizedUserName == normalizedName)) return;
         var r = await CreateLocalAsync(o.AdminEmail, "Administrator", o.AdminPassword, admin: true, mustChange: false);
         if (r.Succeeded) log.LogInformation("Created bootstrap admin {Email}", o.AdminEmail);
         else log.LogError("Could not create bootstrap admin: {Errors}", string.Join("; ", r.Errors.Select(e => e.Description)));

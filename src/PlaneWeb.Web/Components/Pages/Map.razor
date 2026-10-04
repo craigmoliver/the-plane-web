@@ -71,7 +71,10 @@
         bool Include(string hex) => s.MapShowAll || onWall.Contains(hex);
 
         var nowUtc = DateTimeOffset.UtcNow;
-        foreach (var a in snap.MapAircraft) mine[a.Hex] = nowUtc;
+        // Membership is stamped with the last successful poll, so repeated snapshots during an outage don't extend it.
+        if (snap.UpdatedAt != DateTimeOffset.MinValue)
+            foreach (var a in snap.MapAircraft)
+                if (!mine.TryGetValue(a.Hex, out var seen) || seen < snap.UpdatedAt) mine[a.Hex] = snap.UpdatedAt;
         foreach (var gone in mine.Where(kv => nowUtc - kv.Value > TrailStore.StaleAfter).Select(kv => kv.Key).ToList()) mine.Remove(gone);
 
         var aircraft = snap.MapAircraft.Where(a => a.Position.HasValue && Include(a.Hex)).Select(a => new
