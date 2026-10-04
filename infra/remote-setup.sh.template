@@ -39,7 +39,16 @@ if [ -n "$GHCR_USERNAME" ]; then
 fi
 
 docker compose pull
-docker compose up -d --remove-orphans
+# --force-recreate: a Caddyfile-only change (bind-mounted, no image change) would otherwise leave the
+# running Caddy container serving its old config, since Compose doesn't detect bind-mount content changes.
+docker compose up -d --remove-orphans --force-recreate
 docker image prune -f
+# Every deploy uses a new commit-SHA image tag, so old tagged releases pile up on the OS disk (plain
+# `image prune` only removes untagged/dangling ones). Drop every tag of this image except the one just
+# deployed.
+PLANEWEB_IMAGE='__PLANEWEB_IMAGE__'
+REPO="${PLANEWEB_IMAGE%:*}"
+docker images "$REPO" --format '{{.ID}} {{.Repository}}:{{.Tag}}' \
+  | awk -v keep="$PLANEWEB_IMAGE" '$2 != keep { print $1 }' | sort -u | xargs -r docker rmi -f || true
 
 echo PLANEWEB_DEPLOY_OK

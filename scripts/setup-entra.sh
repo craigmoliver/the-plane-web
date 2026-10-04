@@ -38,7 +38,11 @@ if [[ -z "$APP_ID" ]]; then
 else
   # --web-redirect-uris replaces the whole list; merge in the new one instead of dropping any
   # existing callback (e.g. a home-server deployment using the same app registration).
-  mapfile -t URIS < <(az ad app show --id "$APP_ID" --query "web.redirectUris[]" -o tsv)
+  # Avoids mapfile (not in macOS's bundled Bash 3.2) and checks the lookup explicitly so a failure
+  # can't silently fall through to an update that replaces the existing callbacks.
+  existing=$(az ad app show --id "$APP_ID" --query "web.redirectUris[]" -o tsv)
+  URIS=()
+  while IFS= read -r line; do [[ -n "$line" ]] && URIS+=("$line"); done <<< "$existing"
   found=0
   for u in ${URIS[@]+"${URIS[@]}"}; do [[ "$u" == "$NEW_URI" ]] && found=1; done
   [[ $found -eq 0 ]] && URIS+=("$NEW_URI")
