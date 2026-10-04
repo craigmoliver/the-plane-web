@@ -48,7 +48,9 @@ docker image prune -f
 # deployed.
 PLANEWEB_IMAGE='__PLANEWEB_IMAGE__'
 REPO="${PLANEWEB_IMAGE%:*}"
-docker images "$REPO" --format '{{.ID}} {{.Repository}}:{{.Tag}}' \
-  | awk -v keep="$PLANEWEB_IMAGE" '$2 != keep { print $1 }' | sort -u | xargs -r docker rmi -f || true
+# Remove by repository:tag, not by image ID: an old and the just-deployed tag can share an ID (e.g. a
+# rebuild with no code changes), and `docker rmi` of a shared ID deletes every tag pointing to it.
+docker images "$REPO" --format '{{.Repository}}:{{.Tag}}' \
+  | awk -v keep="$PLANEWEB_IMAGE" '$0 != keep' | sort -u | xargs -r docker rmi -f || true
 
 echo PLANEWEB_DEPLOY_OK
