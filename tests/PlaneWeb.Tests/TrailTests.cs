@@ -115,6 +115,30 @@ public class TrailStoreTests
     }
 
     [Fact]
+    public async Task ConcurrentSaves_ToSameFile_DoNotCollide()
+    {
+        // Two replicas (old and new revision) saving the same /data/trails.json at once.
+        var path = Path.Combine(Path.GetTempPath(), $"fw-trails-{Guid.NewGuid()}", "trails.json");
+        var a = new TrailStore(); var b = new TrailStore();
+        a.Record(Ac("a", 34, -84), T0); b.Record(Ac("b", 35, -84), T0);
+        await Task.WhenAll(Enumerable.Range(0, 20).Select(i => (i % 2 == 0 ? a : b).SaveAsync(path)));
+        Assert.Equal(1, new TrailStore().Load(await File.ReadAllTextAsync(path), T0));
+        Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(path)!, "*.tmp"));
+        Directory.Delete(Path.GetDirectoryName(path)!, true);
+    }
+
+    [Fact]
+    public async Task CancelledSave_LeavesNoTempFile()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"fw-trails-{Guid.NewGuid()}");
+        var s = new TrailStore();
+        s.Record(Ac("a", 34, -84), T0);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => s.SaveAsync(Path.Combine(dir, "trails.json"), new CancellationToken(true)));
+        Assert.Empty(Directory.GetFiles(dir));
+        Directory.Delete(dir, true);
+    }
+
+    [Fact]
     public async Task SaveAndLoad_RoundTrips_AndPrunesOnLoad()
     {
         var s = new TrailStore();
@@ -124,7 +148,7 @@ public class TrailStoreTests
 
         var path = Path.Combine(Path.GetTempPath(), $"fw-trails-{Guid.NewGuid()}", "trails.json");
         await s.SaveAsync(path);
-        Assert.False(File.Exists(path + ".tmp"));
+        Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(path)!, "*.tmp"));
 
         var loaded = new TrailStore();
         Assert.Equal(1, loaded.Load(await File.ReadAllTextAsync(path), T0.AddMinutes(1)));

@@ -1,0 +1,113 @@
+name: Deploy to Azure
+
+# Builds the image, pushes it to GitHub Container Registry, and deploys infra/main.bicep.
+# One-time setup: docs/azure.md (OIDC federated credential, repo variables and secrets).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write   # OIDC sign-in to Azure (no stored Azure credentials)
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  test:
+    # Skip until Azure is configured (docs/azure.md), so pushes to main don't fail.
+    # Only main deploys (manual runs from other branches are refused).
+    if: vars.AZURE_CLIENT_ID != '' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet test -c Release
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - run: |
+          docker build -t "${{ steps.meta.outputs.image }}" .
+          docker push "${{ steps.meta.outputs.image }}"
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main'   # defense in depth with the environment's branch policy
+    runs-on: ubuntu-latest
+    environment:
+      name: production   # add required reviewers here to gate deploys
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Write parameters file
+        # Values go through JSON (not a command line) so passwords with spaces or quotes survive verbatim.
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          ADMIN_EMAIL: ${{ vars.ADMIN_EMAIL }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          ENTRA_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
+          ENTRA_CLIENT_ID: ${{ vars.ENTRA_CLIENT_ID }}
+          ENTRA_CLIENT_SECRET: ${{ secrets.ENTRA_CLIENT_SECRET }}
+          ENTRA_ADMIN_OBJECT_IDS: ${{ vars.ENTRA_ADMIN_OBJECT_IDS }}
+          LOCAL_LOGIN: ${{ vars.LOCAL_LOGIN }}
+        run: |
+          umask 077
+          jq -n '{
+            "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+            contentVersion: "1.0.0.0",
+            parameters: {
+              image:              { value: env.IMAGE },
+              registryUsername:   { value: env.GHCR_USERNAME },
+              registryPassword:   { value: env.GHCR_TOKEN },
+              postgresPassword:   { value: env.POSTGRES_PASSWORD },
+              adminEmail:         { value: env.ADMIN_EMAIL },
+              adminPassword:      { value: env.ADMIN_PASSWORD },
+              entraTenantId:      { value: env.ENTRA_TENANT_ID },
+              entraClientId:      { value: env.ENTRA_CLIENT_ID },
+              entraClientSecret:  { value: env.ENTRA_CLIENT_SECRET },
+              localLogin:         { value: ((env.LOCAL_LOGIN // "true") | ascii_downcase) != "false" },
+              entraAdminObjectIds:{ value: (env.ENTRA_ADMIN_OBJECT_IDS | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))) }
+            }
+          }' > "$RUNNER_TEMP/params.json"
+      - id: deploy
+        uses: azure/arm-deploy@v2
+        with:
+          scope: resourcegroup
+          resourceGroupName: ${{ vars.AZURE_RESOURCE_GROUP }}
+          template: infra/main.bicep
+          deploymentName: planeweb-${{ github.run_number }}
+          failOnStdErr: false
+          parameters: ${{ runner.temp }}/params.json
+      - name: Smoke test
+        run: |
+          url="${{ steps.deploy.outputs.url }}"
+          for i in $(seq 1 40); do curl -fs "$url/healthz" && break; sleep 10; done
+          curl -fs "$url/healthz"
+          test "$(curl -s -o /dev/null -w '%{http_code}' "$url/settings")" = 302
+          rm -f "$RUNNER_TEMP/params.json"
+          echo "Deployed: $url  (Entra redirect URI: ${{ steps.deploy.outputs.entraRedirectUri }})"
