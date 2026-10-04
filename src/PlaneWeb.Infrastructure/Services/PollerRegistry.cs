@@ -31,6 +31,8 @@ public sealed class PollerRegistry(
     ILogger<PollerRegistry> log) : BackgroundService
 {
     public static readonly TimeSpan Linger = TimeSpan.FromMinutes(2);
+    /// <summary>Above this many pollers, idle ones are stopped immediately instead of lingering.</summary>
+    public const int MaxPollers = 20;
 
     private sealed class Poller
     {
@@ -78,7 +80,9 @@ public sealed class PollerRegistry(
 
     /// <summary>The live aircraft with this hex in any running area, if any.</summary>
     public Aircraft? FindLive(string hex) =>
-        _pollers.Values.SelectMany(p => p.Store.Current.MapAircraft)
+        _pollers.Values.Select(p => p.Store.Current)
+            .OrderByDescending(s => s.UpdatedAt) // newest data wins when areas overlap
+            .SelectMany(s => s.MapAircraft)
             .FirstOrDefault(a => string.Equals(a.Hex, hex, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>Caller must hold <see cref="_lock"/>.</summary>
@@ -86,6 +90,14 @@ public sealed class PollerRegistry(
     {
         var key = KeyFor(s);
         if (_pollers.TryGetValue(key, out var existing)) return existing;
+        // Repeated saves with different areas shouldn't pile up lingering pollers.
+        if (_pollers.Count >= MaxPollers)
+            foreach (var idle in _pollers.Values.Where(x => !x.Pinned && x.Leases == 0).OrderBy(x => x.LastReleased)
+                         .Take(_pollers.Count - MaxPollers + 1).ToList())
+            {
+                _pollers.TryRemove(idle.Key, out _);
+                idle.Cts.Cancel();
+            }
         var p = new Poller { Key = key, Settings = SettingsService.Clone(s), LastReleased = time.GetUtcNow() };
         _pollers[key] = p;
         ApplySharedSettings();

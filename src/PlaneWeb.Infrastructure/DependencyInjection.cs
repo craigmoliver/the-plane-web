@@ -28,6 +28,13 @@ public static class DependencyInjection
         var cs = config.GetConnectionString("Default") ?? "Data Source=planeweb.db";
         if (IsPostgres(config))
         {
+            // Separate PlaneWeb:Postgres:* settings are escaped properly (passwords may contain ';' etc.).
+            if (config.GetSection("PlaneWeb:Postgres") is var pg && !string.IsNullOrWhiteSpace(pg["Host"]))
+                cs = new Npgsql.NpgsqlConnectionStringBuilder
+                {
+                    Host = pg["Host"], Port = int.TryParse(pg["Port"], out var port) ? port : 5432,
+                    Database = pg["Database"] ?? "planeweb", Username = pg["Username"], Password = pg["Password"],
+                }.ConnectionString;
             services.AddDbContextFactory<PostgresPlaneWebDbContext>(o => o.UseNpgsql(cs));
             services.AddSingleton<IDbContextFactory<PlaneWebDbContext>>(sp =>
                 new FactoryAdapter<PostgresPlaneWebDbContext>(sp.GetRequiredService<IDbContextFactory<PostgresPlaneWebDbContext>>()));

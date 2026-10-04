@@ -221,4 +221,29 @@ public class PollerRegistryTests
         await WaitFor(() => trails.Window == TimeSpan.FromMinutes(60)); // default area is 15 min, alice saved 60
         await reg.StopAsync(default);
     }
+
+    [Fact]
+    public void IdlePollers_AreCappedWhenSettingsChangeRepeatedly()
+    {
+        using var db = new TestDb();
+        var (reg, _, _) = Build(db, new Counting());
+        for (var i = 0; i < PollerRegistry.MaxPollers + 10; i++)
+            reg.Acquire(new WallSettings { CenterLat = 10 + i }).Dispose(); // each save -> new area, old one released
+        Assert.True(reg.ActiveCount <= PollerRegistry.MaxPollers, $"{reg.ActiveCount} pollers");
+        using var held = reg.Acquire(new WallSettings { CenterLat = 89 });
+        Assert.True(reg.ActiveCount <= PollerRegistry.MaxPollers);
+    }
+
+    [Fact]
+    public async Task FindLive_PrefersNewestSnapshot()
+    {
+        using var db = new TestDb();
+        var (reg, time, _) = Build(db, new Counting());
+        using var a = reg.Acquire(new WallSettings { CenterLat = 1 });
+        using var b = reg.Acquire(new WallSettings { CenterLat = 2 });
+        await Task.Delay(50);
+        a.Store.Publish(new WallSnapshot { UpdatedAt = time.Now.AddMinutes(-1), MapAircraft = [new Aircraft { Hex = "x", Callsign = "OLD1" }] });
+        b.Store.Publish(new WallSnapshot { UpdatedAt = time.Now, MapAircraft = [new Aircraft { Hex = "x", Callsign = "NEW1" }] });
+        Assert.Equal("NEW1", reg.FindLive("x")!.Callsign);
+    }
 }

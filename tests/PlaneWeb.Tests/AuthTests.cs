@@ -148,6 +148,7 @@ public class AuthTests(AppFactory app) : IClassFixture<AppFactory>
     [InlineData("https://evil.example/x", "/")]
     [InlineData("//evil.example/x", "/")]
     [InlineData("/\\evil.example", "/")]
+    [InlineData("/\t/evil.example/x", "/")]
     [InlineData("/map", "/map")]
     public void ReturnUrl_IsLocalOnly(string input, string expected) =>
         Assert.Equal(expected, PlaneWeb.Web.AuthSetup.SafeReturnUrl(input));

@@ -176,7 +176,8 @@ public static class AuthSetup
 
     /// <summary>Only same-site relative paths; anything else goes to the home page (prevents open redirects).</summary>
     public static string SafeReturnUrl(string? url) =>
-        !string.IsNullOrEmpty(url) && url.StartsWith('/') && !url.StartsWith("//") && !url.StartsWith("/\\") ? url : "/";
+        !string.IsNullOrEmpty(url) && url.StartsWith('/') && !url.StartsWith("//") && !url.StartsWith("/\\") &&
+        !url.Any(char.IsControl) ? url : "/";
 
     public static string? UserId(this ClaimsPrincipal p) => p.FindFirstValue(ClaimTypes.NameIdentifier);
 }

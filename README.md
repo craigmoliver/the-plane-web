@@ -54,6 +54,7 @@ Settings are stored in SQLite at `/data/planeweb.db` and flight trails in `/data
 | `PlaneWeb__ContactUrl` | repo URL | contact URL sent to planespotters.net (their API requires one) |
 | `PlaneWeb__TraceMinIntervalMs` | `2000` | gap between history lookups (min 250) |
 | `PlaneWeb__Database` | `Sqlite` | `Sqlite` or `Postgres` |
+| `PlaneWeb__Postgres__Host` / `__Port` / `__Database` / `__Username` / `__Password` | – | Postgres settings (alternative to a connection string; passwords needn't be escaped) |
 | `PlaneWeb__Auth__AdminEmail` / `__AdminPassword` | – | first admin, created if missing |
 | `PlaneWeb__Auth__LocalLogin` | `true` | allow email/password accounts |
 | `PlaneWeb__Auth__Entra__TenantId` / `__ClientId` / `__ClientSecret` | – | Microsoft sign-in; see docs/entra.md |

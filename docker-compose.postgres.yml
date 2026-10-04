@@ -6,7 +6,10 @@ services:
         condition: service_healthy
     environment:
       - PlaneWeb__Database=Postgres
-      - ConnectionStrings__Default=Host=db;Database=planeweb;Username=planeweb;Password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      - PlaneWeb__Postgres__Host=db
+      - PlaneWeb__Postgres__Database=planeweb
+      - PlaneWeb__Postgres__Username=planeweb
+      - PlaneWeb__Postgres__Password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
 
   db:
     image: postgres:17-alpine
