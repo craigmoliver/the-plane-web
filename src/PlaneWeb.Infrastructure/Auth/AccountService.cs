@@ -25,8 +25,11 @@ public sealed class EntraOptions
     public string? ClientId { get; set; }
     public string? ClientSecret { get; set; }
     public string Instance { get; set; } = "https://login.microsoftonline.com/";
-    /// <summary>Work-account emails that are made admins on sign-in (in addition to the Entra "Admin" app role).</summary>
-    public List<string> AdminEmails { get; set; } = [];
+    /// <summary>
+    /// Entra object IDs made admin on sign-in (in addition to the "Admin" app role). Object IDs, not emails:
+    /// emails can be renamed and reassigned to someone else.
+    /// </summary>
+    public List<string> AdminObjectIds { get; set; } = [];
     public bool Enabled => !string.IsNullOrWhiteSpace(TenantId) && !string.IsNullOrWhiteSpace(ClientId);
 }
 
@@ -133,8 +136,7 @@ public sealed class AccountService(UserManager<AppUser> users, RoleManager<Ident
 
         if (await users.IsLockedOutAsync(user)) return (null, "This account has been disabled.");
 
-        var admin = id.Roles.Contains(Roles.Admin) ||
-                    (id.Email is not null && o.AdminEmails.Contains(id.Email, StringComparer.OrdinalIgnoreCase));
+        var admin = id.Roles.Contains(Roles.Admin) || o.AdminObjectIds.Contains(id.ObjectId, StringComparer.OrdinalIgnoreCase);
         if (admin && !await users.IsInRoleAsync(user, Roles.Admin)) await users.AddToRoleAsync(user, Roles.Admin);
         if (id.Name is not null && user.DisplayName != id.Name) user.DisplayName = id.Name;
         await users.UpdateAsync(user);

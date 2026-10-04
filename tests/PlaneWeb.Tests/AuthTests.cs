@@ -20,6 +20,7 @@ public sealed class AppFactory : WebApplicationFactory<Program>
         b.UseSetting("PlaneWeb:TrailsFile", Path.Combine(_dir, "trails.json"));
         b.UseSetting("PlaneWeb:Auth:AdminEmail", AdminEmail);
         b.UseSetting("PlaneWeb:Auth:AdminPassword", AdminPassword);
+        b.UseSetting("PlaneWeb:Auth:RevalidateSeconds", "0"); // check sessions on every request
         // Unroutable feeds: polls fail fast instead of calling real services.
         foreach (var k in new[] { "AdsbLolBaseUrl", "AdsbFiBaseUrl", "RoutesBaseUrl", "TraceBaseUrl", "AdsbdbBaseUrl", "PlanespottersBaseUrl", "LogoBaseUrl" })
             b.UseSetting($"PlaneWeb:{k}", "http://127.0.0.1:9/");
@@ -122,7 +123,8 @@ public class AuthTests(AppFactory app) : IClassFixture<AppFactory>
         foreach (var path in new[] { "/settings", "/admin/users", "/map" })
         {
             var r = await c.GetAsync(path);
-            Assert.True(r.StatusCode == HttpStatusCode.Redirect && r.Headers.Location!.ToString().Contains("/account/"), $"{path}: {r.StatusCode} {r.Headers.Location}");
+            Assert.True(r.StatusCode == HttpStatusCode.Redirect && r.Headers.Location!.ToString().EndsWith("/account/change-password"),
+                $"{path}: {r.StatusCode} {r.Headers.Location}");
         }
         Assert.Equal(HttpStatusCode.Forbidden, (await c.GetAsync("/api/aircraft/abc123")).StatusCode);
         // Not even an interactive connection (which never runs the redirect middleware).
@@ -142,6 +144,50 @@ public class AuthTests(AppFactory app) : IClassFixture<AppFactory>
         Assert.Equal(HttpStatusCode.OK, (await c.GetAsync("/settings")).StatusCode);
         var r = await c.GetAsync("/admin/users");
         Assert.True(r.StatusCode == HttpStatusCode.Redirect && r.Headers.Location!.ToString().Contains("/account/denied"), $"{r.StatusCode} {r.Headers.Location}");
+    }
+
+    private async Task<(HttpClient Client, string Email)> SignedInUserAsync()
+    {
+        var email = $"s{Guid.NewGuid():N}@example.com";
+        await using (var scope = app.Services.CreateAsyncScope())
+            await scope.ServiceProvider.GetRequiredService<PlaneWeb.Infrastructure.Auth.AccountService>()
+                .CreateLocalAsync(email, null, "session password 1", admin: false, mustChange: false);
+        var c = Client();
+        await LoginAsync(c, email, "session password 1");
+        Assert.Equal(HttpStatusCode.OK, (await c.GetAsync("/settings")).StatusCode);
+        return (c, email);
+    }
+
+    private async Task WithUser(string email, Func<Microsoft.AspNetCore.Identity.UserManager<PlaneWeb.Infrastructure.Data.AppUser>, PlaneWeb.Infrastructure.Data.AppUser, Task> f)
+    {
+        await using var scope = app.Services.CreateAsyncScope();
+        var um = scope.ServiceProvider.GetRequiredService<Microsoft.AspNetCore.Identity.UserManager<PlaneWeb.Infrastructure.Data.AppUser>>();
+        await f(um, (await um.FindByNameAsync(email))!);
+    }
+
+    [Theory]
+    [InlineData("disable")]
+    [InlineData("sign-out-everywhere")]
+    [InlineData("delete")]
+    public async Task ExistingSession_IsRevoked_OthersUnaffected(string action)
+    {
+        var (victim, victimEmail) = await SignedInUserAsync();
+        var (control, _) = await SignedInUserAsync();
+
+        await WithUser(victimEmail, async (um, u) =>
+        {
+            switch (action)
+            {
+                case "disable": await um.SetLockoutEndDateAsync(u, DateTimeOffset.MaxValue); await um.UpdateSecurityStampAsync(u); break;
+                case "sign-out-everywhere": await um.UpdateSecurityStampAsync(u); break;
+                case "delete": await um.DeleteAsync(u); break;
+            }
+        });
+
+        var r = await victim.GetAsync("/settings");
+        Assert.True(r.StatusCode == HttpStatusCode.Redirect && r.Headers.Location!.ToString().Contains("/account/login"), $"{action}: {r.StatusCode} {r.Headers.Location}");
+        Assert.Equal(HttpStatusCode.Unauthorized, (await victim.GetAsync("/api/aircraft/abc123")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await control.GetAsync("/settings")).StatusCode); // unchanged user keeps access
     }
 
     [Theory]

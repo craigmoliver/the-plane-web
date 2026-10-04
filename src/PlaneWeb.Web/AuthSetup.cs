@@ -35,7 +35,7 @@ public static class AuthSetup
             .AddClaimsPrincipalFactory<AppClaimsFactory>();
 
         // Disabling a user or "sign out everywhere" changes the security stamp; check it every minute.
-        services.Configure<SecurityStampValidatorOptions>(o => o.ValidationInterval = TimeSpan.FromMinutes(1));
+        services.Configure<SecurityStampValidatorOptions>(o => o.ValidationInterval = RevalidateInterval(builder.Configuration));
         services.ConfigureApplicationCookie(o =>
         {
             o.LoginPath = "/account/login";
@@ -103,6 +103,10 @@ public static class AuthSetup
             });
     }
 
+    /// <summary>How often sessions are re-checked against the database (default 60 s; tests use 0).</summary>
+    public static TimeSpan RevalidateInterval(IConfiguration c) =>
+        TimeSpan.FromSeconds(Math.Clamp(c.GetValue("PlaneWeb:Auth:RevalidateSeconds", 60), 0, 3600));
+
     private static Task ApiAware(RedirectContext<Microsoft.AspNetCore.Authentication.Cookies.CookieAuthenticationOptions> ctx, int status)
     {
         if (ctx.Request.Path.StartsWithSegments("/api") || ctx.Request.Path.StartsWithSegments("/logos"))
@@ -128,6 +132,7 @@ public static class AuthSetup
         var p = ctx.Request.Path;
         if (ctx.User.HasClaim(MustChangePasswordClaim, "1") && HttpMethods.IsGet(ctx.Request.Method) &&
             !p.StartsWithSegments("/account") && !p.StartsWithSegments("/_framework") && !p.StartsWithSegments("/_blazor") &&
+            !p.StartsWithSegments("/api") && !p.StartsWithSegments("/logos") &&
             !Path.HasExtension(p.Value) && !p.StartsWithSegments("/healthz"))
         {
             ctx.Response.Redirect("/account/change-password");
@@ -196,10 +201,11 @@ public sealed class AppClaimsFactory(UserManager<AppUser> users, RoleManager<Ide
 }
 
 /// <summary>Re-checks open Blazor connections every minute so disabled or signed-out users lose access promptly.</summary>
-public sealed class RevalidatingIdentityStateProvider(ILoggerFactory lf, IServiceScopeFactory scopes, IOptions<IdentityOptions> o)
+public sealed class RevalidatingIdentityStateProvider(ILoggerFactory lf, IServiceScopeFactory scopes, IOptions<IdentityOptions> o, IConfiguration config)
     : RevalidatingServerAuthenticationStateProvider(lf)
 {
-    protected override TimeSpan RevalidationInterval => TimeSpan.FromMinutes(1);
+    protected override TimeSpan RevalidationInterval =>
+        AuthSetup.RevalidateInterval(config) is var t && t > TimeSpan.Zero ? t : TimeSpan.FromSeconds(5);
 
     protected override async Task<bool> ValidateAuthenticationStateAsync(AuthenticationState state, CancellationToken ct)
     {

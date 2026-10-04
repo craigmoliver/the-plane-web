@@ -51,8 +51,8 @@ app.UseWhen(ctx => !ctx.Request.Path.StartsWithSegments("/api") && !ctx.Request.
     b => b.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true));
 
 app.UseAuthentication();
+app.UseMustChangePassword(); // before authorization, which would otherwise send these users to "access denied"
 app.UseAuthorization();
-app.UseMustChangePassword();
 app.UseRateLimiter();
 app.UseAntiforgery();
 

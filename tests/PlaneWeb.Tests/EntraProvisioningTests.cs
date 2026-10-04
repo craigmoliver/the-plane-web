@@ -23,7 +23,7 @@ public class EntraProvisioningTests
         return (sp, scope.ServiceProvider.GetRequiredService<AccountService>(), scope.ServiceProvider.GetRequiredService<UserManager<AppUser>>());
     }
 
-    private static EntraOptions Opts(params string[] admins) => new() { TenantId = Tenant, ClientId = "c", AdminEmails = [.. admins] };
+    private static EntraOptions Opts(params string[] admins) => new() { TenantId = Tenant, ClientId = "c", AdminObjectIds = [.. admins] };
 
     [Fact]
     public async Task FirstSignIn_CreatesUser_SecondReusesIt()
@@ -76,15 +76,18 @@ public class EntraProvisioningTests
     }
 
     [Fact]
-    public async Task AdminFromAppRoleOrEmailList()
+    public async Task AdminFromAppRoleOrObjectIdList_NotEmail()
     {
         using var db = new TestDb();
         var (sp, accounts, users) = Build(db);
         await accounts.EnsureRolesAsync();
         var (byRole, _) = await accounts.ProvisionExternalAsync(new ExternalIdentity("o1", Tenant, "r@corp.com", null, ["Admin"]), Opts());
-        var (byList, _) = await accounts.ProvisionExternalAsync(new ExternalIdentity("o2", Tenant, "Boss@Corp.com", null, []), Opts("boss@corp.com"));
+        var (byList, _) = await accounts.ProvisionExternalAsync(new ExternalIdentity("O2", Tenant, "boss@corp.com", null, []), Opts("o2"));
+        // Same email as an allow-listed id is not enough.
+        var (sameEmail, _) = await accounts.ProvisionExternalAsync(new ExternalIdentity("o3", Tenant, "boss@corp.com", null, []), Opts("o2", "boss@corp.com"));
         Assert.True(await users.IsInRoleAsync(byRole!, Roles.Admin));
         Assert.True(await users.IsInRoleAsync(byList!, Roles.Admin));
+        Assert.False(await users.IsInRoleAsync(sameEmail!, Roles.Admin));
         sp.Dispose();
     }
 

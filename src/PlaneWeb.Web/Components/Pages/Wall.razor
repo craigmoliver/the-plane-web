@@ -116,6 +116,7 @@
     protected override async Task OnInitializedAsync()
     {
         await base.OnInitializedAsync();
+        if (IsDisposed) return; // closed while loading: don't start timers nobody will stop
         StartRotation();
         clockTimer = new Timer(_ => InvokeAsync(StateHasChanged), null, 1000, 1000);
     }

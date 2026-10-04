@@ -241,7 +241,8 @@ public class PollerRegistryTests
         var (reg, time, _) = Build(db, new Counting());
         using var a = reg.Acquire(new WallSettings { CenterLat = 1 });
         using var b = reg.Acquire(new WallSettings { CenterLat = 2 });
-        await Task.Delay(50);
+        // Let both workers publish their first poll before seeding, so they can't overwrite the test values.
+        await WaitFor(() => a.Store.Current.UpdatedAt != DateTimeOffset.MinValue && b.Store.Current.UpdatedAt != DateTimeOffset.MinValue);
         a.Store.Publish(new WallSnapshot { UpdatedAt = time.Now.AddMinutes(-1), MapAircraft = [new Aircraft { Hex = "x", Callsign = "OLD1" }] });
         b.Store.Publish(new WallSnapshot { UpdatedAt = time.Now, MapAircraft = [new Aircraft { Hex = "x", Callsign = "NEW1" }] });
         Assert.Equal("NEW1", reg.FindLive("x")!.Callsign);

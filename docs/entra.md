@@ -15,7 +15,7 @@ Accounts from other tenants and personal Microsoft accounts are refused.
 1. App registration → **App roles** → **Create app role**: display name `Admin`, value `Admin`, allowed member types **Users/Groups**.
 2. **Enterprise applications** → The Plane Web → **Users and groups** → assign the people (or a group) to `Admin`.
 
-Alternatively list admin emails in `PlaneWeb__Auth__Entra__AdminEmails__0`, `__1`, … or use **Make admin** on `/admin/users`.
+Alternatively list admins' **Object IDs** (Entra ID → Users → the person → Object ID) in `PlaneWeb__Auth__Entra__AdminObjectIds__0`, `__1`, …, or use **Make admin** on `/admin/users`. Emails aren't used because they can be renamed or reassigned.
 Admin granted by role or list is added at sign-in; removing it is done on `/admin/users`.
 
 ## 3. Configure the app

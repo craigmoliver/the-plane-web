@@ -25,7 +25,7 @@
     private WallSettings? s => Settings;
     private WallSnapshot snap => Snapshot;
     private ElementReference mapEl;
-    private bool mapReady;
+    private bool mapReady, mapInitializing;
     private string summary = "Waiting for live data…";
     // What this browser has already received, so updates only carry new points.
     private readonly Dictionary<string, (int Rev, double LastT)> sent = new(StringComparer.OrdinalIgnoreCase);
@@ -35,8 +35,11 @@
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (!firstRender || s is null) return;
-        await JS.InvokeVoidAsync("planeWebLiveMap.init", mapEl, AreaState(), s.MapLayer);
+        // Settings may load after the first render, so initialize on whichever render first has them.
+        if (mapReady || mapInitializing || s is null) return;
+        mapInitializing = true;
+        try { await JS.InvokeVoidAsync("planeWebLiveMap.init", mapEl, AreaState(), s.MapLayer); }
+        finally { mapInitializing = false; }
         mapReady = true;
         await Push();
         StateHasChanged(); // show the summary for the snapshot that already existed

@@ -21,6 +21,8 @@ public abstract class UserFeedComponent : ComponentBase, IAsyncDisposable
     protected WallSnapshot Snapshot { get; private set; } = WallSnapshot.Empty;
     private PollerLease? _lease;
     private bool _disposed;
+    /// <summary>True once the page has been disposed (it may happen while initialization is still awaiting).</summary>
+    protected bool IsDisposed => _disposed;
 
     protected override async Task OnInitializedAsync()
     {
