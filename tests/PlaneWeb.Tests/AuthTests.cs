@@ -2,6 +2,7 @@ using System.Net;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace PlaneWeb.Tests;
 
@@ -102,6 +103,45 @@ public class AuthTests(AppFactory app) : IClassFixture<AppFactory>
         Assert.Equal(HttpStatusCode.OK, r.StatusCode);
         Assert.Contains("Incorrect email or password", await r.Content.ReadAsStringAsync());
         Assert.Equal(HttpStatusCode.Redirect, (await c.GetAsync("/settings")).StatusCode);
+    }
+
+    [Fact]
+    public async Task TemporaryPassword_OnlyAllowsChangingIt()
+    {
+        var email = $"temp{Guid.NewGuid():N}@example.com";
+        await using (var scope = app.Services.CreateAsyncScope())
+        {
+            var r = await scope.ServiceProvider.GetRequiredService<PlaneWeb.Infrastructure.Auth.AccountService>()
+                .CreateLocalAsync(email, null, "temporary password 1", admin: true, mustChange: true);
+            Assert.True(r.Succeeded);
+        }
+        var c = Client();
+        await LoginAsync(c, email, "temporary password 1");
+
+        Assert.Equal(HttpStatusCode.OK, (await c.GetAsync("/account/change-password")).StatusCode);
+        foreach (var path in new[] { "/settings", "/admin/users", "/map" })
+        {
+            var r = await c.GetAsync(path);
+            Assert.True(r.StatusCode == HttpStatusCode.Redirect && r.Headers.Location!.ToString().Contains("/account/"), $"{path}: {r.StatusCode} {r.Headers.Location}");
+        }
+        Assert.Equal(HttpStatusCode.Forbidden, (await c.GetAsync("/api/aircraft/abc123")).StatusCode);
+        // Not even an interactive connection (which never runs the redirect middleware).
+        var hub = await c.PostAsync("/_blazor/negotiate?negotiateVersion=1", null);
+        Assert.True(hub.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Redirect, $"hub: {hub.StatusCode}");
+    }
+
+    [Fact]
+    public async Task NonAdmin_CannotOpenAdminPage()
+    {
+        var email = $"user{Guid.NewGuid():N}@example.com";
+        await using (var scope = app.Services.CreateAsyncScope())
+            await scope.ServiceProvider.GetRequiredService<PlaneWeb.Infrastructure.Auth.AccountService>()
+                .CreateLocalAsync(email, null, "regular password 1", admin: false, mustChange: false);
+        var c = Client();
+        await LoginAsync(c, email, "regular password 1");
+        Assert.Equal(HttpStatusCode.OK, (await c.GetAsync("/settings")).StatusCode);
+        var r = await c.GetAsync("/admin/users");
+        Assert.True(r.StatusCode == HttpStatusCode.Redirect && r.Headers.Location!.ToString().Contains("/account/denied"), $"{r.StatusCode} {r.Headers.Location}");
     }
 
     [Theory]

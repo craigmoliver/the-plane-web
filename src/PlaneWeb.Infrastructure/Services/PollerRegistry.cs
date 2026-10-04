@@ -61,8 +61,9 @@ public sealed class PollerRegistry(
 
     public PollerLease Acquire(WallSettings s)
     {
-        var p = GetOrStart(s);
-        lock (_lock) p.Leases++;
+        Poller p;
+        // One critical section with Sweep, so a poller can't be removed between lookup and lease.
+        lock (_lock) { p = GetOrStart(s); p.Leases++; }
         return new PollerLease(p.Store, () =>
         {
             lock (_lock) { p.Leases--; p.LastReleased = time.GetUtcNow(); }
@@ -74,18 +75,16 @@ public sealed class PollerRegistry(
         _pollers.Values.SelectMany(p => p.Store.Current.MapAircraft)
             .FirstOrDefault(a => string.Equals(a.Hex, hex, StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>Caller must hold <see cref="_lock"/>.</summary>
     private Poller GetOrStart(WallSettings s)
     {
         var key = KeyFor(s);
-        lock (_lock)
-        {
-            if (_pollers.TryGetValue(key, out var existing)) return existing;
-            var p = new Poller { Key = key, Settings = SettingsService.Clone(s), LastReleased = time.GetUtcNow() };
-            _pollers[key] = p;
-            ApplySharedSettings();
-            _ = Task.Run(() => RunAsync(p));
-            return p;
-        }
+        if (_pollers.TryGetValue(key, out var existing)) return existing;
+        var p = new Poller { Key = key, Settings = SettingsService.Clone(s), LastReleased = time.GetUtcNow() };
+        _pollers[key] = p;
+        ApplySharedSettings();
+        _ = Task.Run(() => RunAsync(p));
+        return p;
     }
 
     /// <summary>History lookups run if any active area wants them; trails keep the longest active window.</summary>
@@ -121,9 +120,9 @@ public sealed class PollerRegistry(
 
     private void Pin(WallSettings s)
     {
-        var p = GetOrStart(s);
         lock (_lock)
         {
+            var p = GetOrStart(s);
             if (_pinnedKey is { } old && old != p.Key && _pollers.TryGetValue(old, out var prev))
             {
                 prev.Pinned = false;

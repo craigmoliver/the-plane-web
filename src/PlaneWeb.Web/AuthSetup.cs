@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using System.Security.Claims;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Antiforgery;
@@ -17,6 +18,9 @@ public static class AuthSetup
 {
     public const string MustChangePasswordClaim = "pw_change";
     public const string LoginRateLimit = "login";
+    /// <summary>Signed in, even with a temporary password (only for changing it).</summary>
+    public const string SignedInPolicy = "SignedIn";
+    public const string AdminPolicy = "Admin";
 
     public static void AddPlaneWebAuth(this WebApplicationBuilder builder)
     {
@@ -66,9 +70,16 @@ public static class AuthSetup
             });
         }
 
+        // A temporary-password session only satisfies SignedInPolicy (the change-password page);
+        // every other policy also requires the password to have been changed.
+        static AuthorizationPolicyBuilder Full() => new AuthorizationPolicyBuilder()
+            .RequireAuthenticatedUser()
+            .RequireAssertion(ctx => !ctx.User.HasClaim(MustChangePasswordClaim, "1"));
         services.AddAuthorizationBuilder()
-            // Everything requires a signed-in user unless marked [AllowAnonymous].
-            .SetFallbackPolicy(new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build());
+            .SetDefaultPolicy(Full().Build())     // [Authorize]
+            .SetFallbackPolicy(Full().Build())    // endpoints without metadata, incl. the Blazor hub
+            .AddPolicy(AdminPolicy, Full().RequireRole(Roles.Admin).Build())
+            .AddPolicy(SignedInPolicy, p => p.RequireAuthenticatedUser());
         services.AddCascadingAuthenticationState();
         services.AddScoped<AuthenticationStateProvider, RevalidatingIdentityStateProvider>();
         services.AddScoped<AccountService>();

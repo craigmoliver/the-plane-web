@@ -9,6 +9,7 @@ namespace PlaneWeb.Web.Components;
 /// Base for pages that show the signed-in user's live data: loads their settings, holds a lease on the
 /// poller for their area, and follows changes to either. Other users' settings changes are ignored.
 /// </summary>
+[Microsoft.AspNetCore.Authorization.Authorize] // also checked during interactive navigation and revalidation
 public abstract class UserFeedComponent : ComponentBase, IAsyncDisposable
 {
     [Inject] protected SettingsService SettingsSvc { get; set; } = default!;

@@ -1,5 +1,5 @@
 @page "/admin/users"
-@attribute [Authorize(Roles = "Admin")]
+@attribute [Authorize(Policy = AuthSetup.AdminPolicy)]
 @using Microsoft.AspNetCore.Identity
 @using Microsoft.EntityFrameworkCore
 @using Microsoft.Extensions.Options

@@ -2,7 +2,11 @@
     <Found Context="routeData">
         <AuthorizeRouteView RouteData="routeData" DefaultLayout="typeof(Layout.MainLayout)">
             <NotAuthorized>
-                @if (context.User.Identity?.IsAuthenticated == true)
+                @if (context.User.HasClaim(AuthSetup.MustChangePasswordClaim, "1"))
+                {
+                    <div class="account"><div class="account-card"><h1>Change your password</h1><p>Choose a new password to continue.</p><a class="btn primary" href="/account/change-password" data-enhance-nav="false">Change password</a></div></div>
+                }
+                else if (context.User.Identity?.IsAuthenticated == true)
                 {
                     <div class="account"><div class="account-card"><h1>Access denied</h1><p>You don't have permission to view this page.</p><a class="btn" href="/">Home</a></div></div>
                 }
