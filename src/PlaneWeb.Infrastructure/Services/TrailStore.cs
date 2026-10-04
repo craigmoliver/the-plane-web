@@ -152,7 +152,15 @@ public sealed class TrailStore
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
         // Unique temp name: during an Azure rollout the old and new replica briefly share /data.
         var tmp = $"{path}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
-        await File.WriteAllTextAsync(tmp, Serialize(), ct);
-        File.Move(tmp, path, overwrite: true);
+        try
+        {
+            await File.WriteAllTextAsync(tmp, Serialize(), ct);
+            File.Move(tmp, path, overwrite: true);
+        }
+        finally
+        {
+            // After a failed or cancelled write, don't leave a uniquely named file behind on the share.
+            try { if (File.Exists(tmp)) File.Delete(tmp); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        }
     }
 }

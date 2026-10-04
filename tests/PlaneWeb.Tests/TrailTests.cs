@@ -128,6 +128,17 @@ public class TrailStoreTests
     }
 
     [Fact]
+    public async Task CancelledSave_LeavesNoTempFile()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"fw-trails-{Guid.NewGuid()}");
+        var s = new TrailStore();
+        s.Record(Ac("a", 34, -84), T0);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => s.SaveAsync(Path.Combine(dir, "trails.json"), new CancellationToken(true)));
+        Assert.Empty(Directory.GetFiles(dir));
+        Directory.Delete(dir, true);
+    }
+
+    [Fact]
     public async Task SaveAndLoad_RoundTrips_AndPrunesOnLoad()
     {
         var s = new TrailStore();

@@ -41,10 +41,10 @@ Create an environment named **production**. Under **Deployment branches and tags
 | Variables | |
 |---|---|
 | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP` | from above |
-| `ADMIN_EMAIL` | bootstrap local admin (optional with Entra) |
+| `ADMIN_EMAIL` | bootstrap local admin; needs `ADMIN_PASSWORD` too (optional with Entra) |
 | `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID` | work-account sign-in, see docs/entra.md |
 | `LOCAL_LOGIN` | `false` for work accounts only (default `true`) |
-| `ENTRA_ADMIN_OBJECT_IDS` | comma-separated Entra object IDs made admin (yours, at least, unless you use the Entra `Admin` app role or `ADMIN_EMAIL`) |
+| `ENTRA_ADMIN_OBJECT_IDS` | comma-separated Entra object IDs made admin (yours, at least, unless you use the Entra `Admin` app role or set both `ADMIN_EMAIL` and `ADMIN_PASSWORD`) |
 
 | Secrets | |
 |---|---|
@@ -68,4 +68,4 @@ add that redirect URI to the Entra app registration (docs/entra.md).
   az container exec -g $RG -n pgdebug --exec-command "psql -h <postgresHost output> -U planeweb -d planeweb"
   az container delete -g $RG -n pgdebug -y && az network vnet subnet delete -g $RG --vnet-name planeweb-vnet -n debug
   ```
-- **Admin access:** make sure at least one of `ADMIN_EMAIL`/`ADMIN_PASSWORD`, `ENTRA_ADMIN_OBJECT_IDS`, or the Entra `Admin` app role is set, or nobody can manage users.
+- **Admin access:** make sure at least one admin path is set: **both** `ADMIN_EMAIL` and `ADMIN_PASSWORD` (one alone does nothing), `ENTRA_ADMIN_OBJECT_IDS`, or the Entra `Admin` app role, or nobody can manage users.
