@@ -2,7 +2,7 @@
 
 #nullable disable
 
-namespace PlaneWeb.Infrastructure.Data.Migrations
+namespace PlaneWeb.Infrastructure.Data.Migrations.Sqlite
 {
     /// <inheritdoc />
     public partial class MapSettings : Migration

@@ -236,3 +236,25 @@ input[type=checkbox] { width: 1rem; height: 1rem; }
 
 .settings-header nav { display: flex; gap: .5rem; }
 .route-cell[title] { cursor: help; }
+
+/* ---------- Accounts ---------- */
+.account { min-height: 100vh; display: grid; place-items: center; padding: 1rem; }
+.account-card { width: min(420px, 100%); background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 2rem; }
+.account-card h1 { margin: 0 0 .5rem; }
+.account-card label { display: flex; flex-direction: column; gap: .3rem; margin: .8rem 0; }
+.account-card label.check { flex-direction: row; align-items: center; font-size: .9rem; }
+.account-card input[type=email], .account-card input[type=password] { padding: .55rem .6rem; background: #0b0c0d; color: var(--text); border: 1px solid var(--border); border-radius: 4px; }
+.btn.wide { width: 100%; margin-top: .6rem; }
+.btn.danger { border-color: #5a1f1c; color: #ff8a80; }
+.dim { color: var(--dim); }
+.error { color: #ff8a80; }
+.or { text-align: center; color: var(--dim); margin: 1rem 0 .2rem; font-size: .85rem; }
+.user-menu { display: inline-flex; gap: .8rem; align-items: center; }
+.user-menu a, .link-button { color: inherit; opacity: .8; }
+.link-button { background: none; border: 0; padding: 0; font: inherit; cursor: pointer; text-decoration: underline; }
+.inline-form { display: inline; margin: 0; }
+.temp-password { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; margin: 1rem 0; }
+table.users { width: 100%; border-collapse: collapse; }
+table.users th, table.users td { text-align: left; padding: .5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+table.users tr.disabled { opacity: .55; }
+table.users .actions { display: flex; flex-wrap: wrap; gap: .3rem; }

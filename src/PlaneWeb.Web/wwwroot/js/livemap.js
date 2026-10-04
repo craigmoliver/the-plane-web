@@ -168,7 +168,7 @@ window.planeWebLiveMap = (() => {
         const live = new Set();
         for (const a of p.aircraft) {
             live.add(a.hex);
-            upsertPlane(a, p.asOf || nowSec());
+            upsertPlane(a, a.obs || p.asOf || nowSec()); // each marker animates from its own observation time
             const t = trails.get(a.hex);
             if (t) t.wall = a.wall;
         }

@@ -2,9 +2,7 @@
 @using PlaneWeb.Core
 @using PlaneWeb.Infrastructure.Services
 @using System.Text.Json
-@implements IAsyncDisposable
-@inject SettingsService SettingsSvc
-@inject FlightStateStore Store
+@inherits UserFeedComponent
 @inject IJSRuntime JS
 
 <PageTitle>Settings · The Plane Web</PageTitle>
@@ -12,7 +10,7 @@
 <div class="settings">
     <header class="settings-header">
         <h1>The Plane Web Settings</h1>
-        <nav><a href="/map" class="btn">Live Map</a><a href="/wall" class="btn primary">Open Wall ▶</a></nav>
+        <nav><UserMenu /><a href="/map" class="btn">Live Map</a><a href="/wall" class="btn primary">Open Wall ▶</a></nav>
     </header>
 
     @if (s is null)
@@ -139,7 +137,7 @@
                 else
                 {
                     <h2>Live status</h2>
-                    @foreach (var t in Store.Current.Tracked)
+                    @foreach (var t in Snapshot.Tracked)
                     {
                         <div class="live-row">
                             <span class="mono">@t.Callsign</span>
@@ -157,6 +155,7 @@
 </div>
 
 @code {
+    // Editable copy; the saved settings (base.Settings) drive the live data until Save.
     private WallSettings? s;
     private ElementReference mapEl;
     private DotNetObjectReference<Settings>? selfRef;
@@ -168,9 +167,9 @@
 
     protected override async Task OnInitializedAsync()
     {
-        s = await SettingsSvc.GetAsync();
-        Store.Updated += OnSnapshot;
-        UpdateSummary(Store.Current);
+        await base.OnInitializedAsync();
+        s = await SettingsSvc.GetAsync(UserId);
+        UpdateSummary(Snapshot);
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -180,7 +179,7 @@
             selfRef ??= DotNetObjectReference.Create(this);
             await JS.InvokeVoidAsync("planeWebMap.init", mapEl, selfRef, MapState());
             mapReady = true;
-            await PushAircraft(Store.Current);
+            await PushAircraft(Snapshot);
         }
     }
 
@@ -246,18 +245,17 @@
         if (s!.MinAltitudeFt > s.MaxAltitudeFt) (s.MinAltitudeFt, s.MaxAltitudeFt) = (s.MaxAltitudeFt, s.MinAltitudeFt);
         if (s.Validate() is { } error) { status = null; validationError = error; return; }
         validationError = null;
-        await SettingsSvc.SaveAsync(s);
-        s = await SettingsSvc.GetAsync();
+        await SettingsSvc.SaveAsync(UserId, s);
+        s = await SettingsSvc.GetAsync(UserId);
         await UpdateMap();
         status = $"Saved at {DateTime.Now:T}";
     }
 
-    private void OnSnapshot(WallSnapshot snap) => InvokeAsync(async () =>
+    protected override async Task OnSnapshotAsync()
     {
-        UpdateSummary(snap);
-        if (mapReady) await PushAircraft(snap);
-        StateHasChanged();
-    });
+        UpdateSummary(Snapshot);
+        if (mapReady) await PushAircraft(Snapshot);
+    }
 
     private void UpdateSummary(WallSnapshot snap) =>
         liveSummary = snap.UpdatedAt == DateTimeOffset.MinValue ? "Waiting for live data…"
@@ -272,9 +270,9 @@
         try { await JS.InvokeVoidAsync("planeWebMap.setAircraft", list); } catch (JSDisconnectedException) { }
     }
 
-    public async ValueTask DisposeAsync()
+    public override async ValueTask DisposeAsync()
     {
-        Store.Updated -= OnSnapshot;
+        await base.DisposeAsync();
         try { if (mapReady) await JS.InvokeVoidAsync("planeWebMap.dispose"); } catch (JSDisconnectedException) { }
         selfRef?.Dispose();
     }

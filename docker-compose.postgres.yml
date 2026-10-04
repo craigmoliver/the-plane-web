@@ -1,0 +1,30 @@
+# Use PostgreSQL instead of SQLite (same database type as Azure).
+services:
+  planeweb:
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - PlaneWeb__Database=Postgres
+      - PlaneWeb__Postgres__Host=db
+      - PlaneWeb__Postgres__Database=planeweb
+      - PlaneWeb__Postgres__Username=planeweb
+      - PlaneWeb__Postgres__Password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+
+  db:
+    image: postgres:17-alpine
+    container_name: planeweb-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=planeweb
+      - POSTGRES_USER=planeweb
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - planeweb-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U planeweb -d planeweb"]
+      interval: 5s
+      retries: 10
+
+volumes:
+  planeweb-pg:

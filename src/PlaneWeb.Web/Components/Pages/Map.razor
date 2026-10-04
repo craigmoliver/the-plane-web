@@ -1,10 +1,8 @@
 @page "/map"
 @using PlaneWeb.Core
 @using PlaneWeb.Infrastructure.Services
-@implements IAsyncDisposable
-@inject FlightStateStore Store
+@inherits UserFeedComponent
 @inject TrailStore Trails
-@inject SettingsService SettingsSvc
 @inject IJSRuntime JS
 
 <PageTitle>Map · The Plane Web</PageTitle>
@@ -18,31 +16,30 @@
         <nav>
             <a href="/wall">WALL</a>
             <a href="/settings">SETTINGS</a>
+            <UserMenu />
         </nav>
     </div>
 </div>
 
 @code {
-    private WallSettings? s;
-    private WallSnapshot snap = WallSnapshot.Empty;
+    private WallSettings? s => Settings;
+    private WallSnapshot snap => Snapshot;
     private ElementReference mapEl;
-    private bool mapReady;
+    private bool mapReady, mapInitializing;
     private string summary = "Waiting for live data…";
     // What this browser has already received, so updates only carry new points.
     private readonly Dictionary<string, (int Rev, double LastT)> sent = new(StringComparer.OrdinalIgnoreCase);
-
-    protected override async Task OnInitializedAsync()
-    {
-        s = await SettingsSvc.GetAsync();
-        snap = Store.Current;
-        Store.Updated += OnSnapshot;
-        SettingsSvc.Changed += OnSettings;
-    }
+    // Aircraft seen in this user's own area. The trail store is shared by every area, so only these
+    // trails are sent (kept for a while after the aircraft leaves, like the trail itself).
+    private readonly Dictionary<string, DateTimeOffset> mine = new(StringComparer.OrdinalIgnoreCase);
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (!firstRender || s is null) return;
-        await JS.InvokeVoidAsync("planeWebLiveMap.init", mapEl, AreaState(), s.MapLayer);
+        // Settings may load after the first render, so initialize on whichever render first has them.
+        if (mapReady || mapInitializing || s is null) return;
+        mapInitializing = true;
+        try { await JS.InvokeVoidAsync("planeWebLiveMap.init", mapEl, AreaState(), s.MapLayer); }
+        finally { mapInitializing = false; }
         mapReady = true;
         await Push();
         StateHasChanged(); // show the summary for the snapshot that already existed
@@ -55,25 +52,31 @@
         polygon = s.Polygon.Select(p => new[] { p.Lat, p.Lon }).ToArray(),
     };
 
-    private void OnSnapshot(WallSnapshot next) => InvokeAsync(async () =>
-    {
-        snap = next;
-        await Push();
-        StateHasChanged();
-    });
+    protected override Task OnSnapshotAsync() => Push();
 
-    private void OnSettings(WallSettings next) => InvokeAsync(async () =>
+    private string? pollKey;
+
+    protected override async Task OnInitializedAsync()
     {
-        s = next;
-        sent.Clear(); // filters may have changed: resend everything
+        await base.OnInitializedAsync();
+        if (Settings is not null) pollKey = PollerRegistry.KeyFor(Settings);
+    }
+
+    protected override async Task OnUserSettingsChangedAsync()
+    {
+        sent.Clear(); // display options may have changed: resend everything
+        // Keep area membership (and so recently departed aircraft's trails) for display-only changes like
+        // title, units or trail length; reset it only when what is polled changes.
+        var key = PollerRegistry.KeyFor(Settings!);
+        if (key != pollKey) mine.Clear();
+        pollKey = key;
         if (mapReady) await SafeJs("planeWebLiveMap.setArea", AreaState(), true);
         await Push();
-        StateHasChanged();
-    });
+    }
 
     private async Task Push()
     {
-        if (!mapReady || s is null) return;
+        if (!mapReady || s is null || IsDisposed) return;
 
         // "On the wall" = the nearest page of flights the wall leads with (or the tracked flights).
         var onWall = (snap.Mode == DisplayMode.Area
@@ -82,11 +85,22 @@
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         bool Include(string hex) => s.MapShowAll || onWall.Contains(hex);
 
+        var nowUtc = DateTimeOffset.UtcNow;
+        // Membership is stamped with the last successful poll, so repeated snapshots during an outage don't extend it.
+        if (snap.UpdatedAt != DateTimeOffset.MinValue)
+            foreach (var a in snap.MapAircraft)
+            {
+                var at = a.ObservedAt ?? snap.UpdatedAt; // tracked flights are each fetched at their own time
+                if (!mine.TryGetValue(a.Hex, out var seen) || seen < at) mine[a.Hex] = at;
+            }
+        foreach (var gone in mine.Where(kv => nowUtc - kv.Value > TrailStore.StaleAfter).Select(kv => kv.Key).ToList()) mine.Remove(gone);
+
         var aircraft = snap.MapAircraft.Where(a => a.Position.HasValue && Include(a.Hex)).Select(a => new
         {
             hex = a.Hex, lat = a.Lat, lon = a.Lon, alt = a.OnGround ? 0 : a.AltitudeFt, ground = a.OnGround,
             gs = a.GroundSpeedKt, trk = a.TrackDeg, wall = onWall.Contains(a.Hex),
             ident = Fmt.Ident(a), type = Fmt.Type(a), reg = a.Registration, op = a.Operator,
+            obs = (a.ObservedAt ?? snap.UpdatedAt).ToUnixTimeMilliseconds() / 1000.0,
             callsign = a.Callsign, typeCode = a.TypeCode, squawk = a.Squawk, category = a.Category,
             altText = $"{Fmt.Climb(a.VerticalRateFpm)} {Fmt.Alt(a, s.Units)}".Trim(),
             spdText = Fmt.Speed(a.GroundSpeedKt, s.Units),
@@ -97,9 +111,10 @@
 
         var present = new List<string>();
         var trails = new List<object>();
-        foreach (var t in Trails.Snapshot())
+        foreach (var hex in mine.Keys)
         {
-            if (!Include(t.Hex) || t.Points.Count == 0) continue;
+            // Get copies one trail; Snapshot() would copy every area's trails.
+            if (!Include(hex) || Trails.Get(hex) is not { Points.Count: > 0 } t) continue;
             present.Add(t.Hex);
             var full = !sent.TryGetValue(t.Hex, out var prev) || prev.Rev != t.Revision;
             var pts = full ? t.Points : t.Points.Where(p => p.T > prev.LastT).ToList();
@@ -132,10 +147,9 @@
         catch (JSException) { return false; }
     }
 
-    public async ValueTask DisposeAsync()
+    public override async ValueTask DisposeAsync()
     {
-        Store.Updated -= OnSnapshot;
-        SettingsSvc.Changed -= OnSettings;
+        await base.DisposeAsync(); // detach feeds first so nothing pushes to a page being torn down
         if (mapReady) await SafeJs("planeWebLiveMap.dispose");
     }
 }

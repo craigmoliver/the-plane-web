@@ -1,0 +1,4 @@
+{$PLANEWEB_HOST} {
+	encode gzip
+	reverse_proxy planeweb:8080
+}

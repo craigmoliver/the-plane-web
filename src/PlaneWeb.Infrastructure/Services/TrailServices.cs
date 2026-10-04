@@ -107,8 +107,9 @@ public sealed class TrailPersistenceService(
             if (File.Exists(Path))
             {
                 // Apply the saved path length first so restoring doesn't trim to the default window.
-                var s = await settings.GetAsync(ct);
-                trails.Window = TimeSpan.FromMinutes(Math.Clamp(s.TrailMinutes, 1, WallSettings.MaxTrailMinutes));
+                var all = await settings.GetAllAsync(ct);
+                var minutes = all.Count == 0 ? 15 : all.Max(x => x.TrailMinutes);
+                trails.Window = TimeSpan.FromMinutes(Math.Clamp(minutes, 1, WallSettings.MaxTrailMinutes));
                 var kept = trails.Load(await File.ReadAllTextAsync(Path, ct), time.GetUtcNow());
                 log.LogInformation("Restored {Count} flight trails from {Path}", kept, Path);
             }

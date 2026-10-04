@@ -1,19 +1,47 @@
 using System.Text.Json;
-using PlaneWeb.Core;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
+using PlaneWeb.Core;
 
 namespace PlaneWeb.Infrastructure.Data;
 
-public sealed class PlaneWebDbContext(DbContextOptions<PlaneWebDbContext> options) : DbContext(options)
+/// <summary>A signed-in person. Local accounts have a password; work (Entra) accounts sign in via Microsoft.</summary>
+public sealed class AppUser : IdentityUser
+{
+    public string? DisplayName { get; set; }
+    /// <summary>Set when an admin creates or resets a local account; cleared after the user picks a new password.</summary>
+    public bool MustChangePassword { get; set; }
+    /// <summary>True for accounts created from a Microsoft (Entra ID) sign-in.</summary>
+    public bool IsExternal { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset? LastSignInAt { get; set; }
+}
+
+public static class Roles
+{
+    public const string Admin = "Admin";
+    public const string User = "User";
+}
+
+/// <summary>
+/// Shared model. Concrete subclasses exist per database provider so each has its own migrations
+/// (SQLite for the home server, PostgreSQL for Azure).
+/// </summary>
+public abstract class PlaneWebDbContext(DbContextOptions options) : IdentityDbContext<AppUser>(options)
 {
     public DbSet<WallSettings> Settings => Set<WallSettings>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
+        base.OnModelCreating(b);
         var e = b.Entity<WallSettings>();
         e.HasKey(x => x.Id);
-        e.Property(x => x.Id).ValueGeneratedNever();
+        e.Property(x => x.Id).ValueGeneratedOnAdd();
+        // One row per user; the row with a null UserId is the shared default new users start from.
+        e.HasIndex(x => x.UserId).IsUnique();
+        e.HasOne<AppUser>().WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
         e.Ignore(x => x.Center);
         e.Ignore(x => x.Polygon);
         e.Property(x => x.TrackedFlights)
@@ -26,3 +54,7 @@ public sealed class PlaneWebDbContext(DbContextOptions<PlaneWebDbContext> option
                     v => v.ToList()));
     }
 }
+
+public sealed class SqlitePlaneWebDbContext(DbContextOptions<SqlitePlaneWebDbContext> options) : PlaneWebDbContext(options);
+
+public sealed class PostgresPlaneWebDbContext(DbContextOptions<PostgresPlaneWebDbContext> options) : PlaneWebDbContext(options);

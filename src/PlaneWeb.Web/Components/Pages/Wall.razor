@@ -1,9 +1,7 @@
 @page "/wall"
 @using PlaneWeb.Core
 @using PlaneWeb.Infrastructure.Services
-@implements IDisposable
-@inject FlightStateStore Store
-@inject SettingsService SettingsSvc
+@inherits UserFeedComponent
 @inject IJSRuntime JS
 
 <PageTitle>@(s?.Title ?? "The Plane Web")</PageTitle>
@@ -105,22 +103,20 @@
     <div class="wall-footer led dim small">
         @if (snap.Error is not null) { <span class="led red">⚠ @snap.Error</span> }
         <span>DATA: @(snap.Source ?? "—") · UPDATED @(snap.UpdatedAt == DateTimeOffset.MinValue ? "—" : snap.UpdatedAt.ToLocalTime().ToString("HH:mm:ss"))</span>
-        <span><a href="/map">MAP</a> · <a href="/settings">SETTINGS</a></span>
+        <span><a href="/map">MAP</a> · <a href="/settings">SETTINGS</a> · <UserMenu /></span>
     </div>
 </div>
 
 @code {
-    private WallSettings? s;
-    private WallSnapshot snap = WallSnapshot.Empty;
+    private WallSettings? s => Settings;
+    private WallSnapshot snap => Snapshot;
     private int pageIndex;
     private Timer? rotateTimer, clockTimer;
 
     protected override async Task OnInitializedAsync()
     {
-        s = await SettingsSvc.GetAsync();
-        snap = Store.Current;
-        Store.Updated += OnSnapshot;
-        SettingsSvc.Changed += OnSettings;
+        await base.OnInitializedAsync();
+        if (IsDisposed) return; // closed while loading: don't start timers nobody will stop
         StartRotation();
         clockTimer = new Timer(_ => InvokeAsync(StateHasChanged), null, 1000, 1000);
     }
@@ -149,23 +145,19 @@
     private static string Pct(double? p) =>
         $"{Math.Clamp((p ?? 0) * 100, 0, 100).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)}%";
 
-    private void OnSnapshot(WallSnapshot next) => InvokeAsync(() => { snap = next; StateHasChanged(); });
-
-    private void OnSettings(WallSettings next) => InvokeAsync(() =>
+    protected override Task OnUserSettingsChangedAsync()
     {
-        s = next;
         pageIndex = 0;
         StartRotation();
-        StateHasChanged();
-    });
+        return Task.CompletedTask;
+    }
 
     private async Task Fullscreen() => await JS.InvokeVoidAsync("planeWebMap.requestFullscreen");
 
-    public void Dispose()
+    public override ValueTask DisposeAsync()
     {
-        Store.Updated -= OnSnapshot;
-        SettingsSvc.Changed -= OnSettings;
         rotateTimer?.Dispose();
         clockTimer?.Dispose();
+        return base.DisposeAsync();
     }
 }
