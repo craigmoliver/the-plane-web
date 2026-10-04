@@ -56,5 +56,13 @@ add that redirect URI to the Entra app registration (docs/entra.md).
 ## Notes
 - **adsb.lol from Azure:** free feeds may throttle cloud IPs. The app falls back to adsb.fi automatically; check `az containerapp logs show -n planeweb -g $RG` for 429s after the first deploy.
 - **Custom domain:** later, via `az containerapp hostname add` + managed certificate.
-- **Database access:** PostgreSQL is reachable only inside the virtual network, so tools outside it (including the portal's query editor) can't connect. To inspect it, run a temporary container or VM in the VNet (e.g. `az container create` with `--vnet` and the `postgres` image, then `psql`), and delete it afterwards.
+- **Database access:** PostgreSQL is reachable only inside the virtual network, so tools outside it (including the portal's query editor) can't connect. To inspect it, use a temporary container in its own subnet (the template's two subnets are delegated to Container Apps and PostgreSQL):
+  ```bash
+  az network vnet subnet create -g $RG --vnet-name planeweb-vnet -n debug --address-prefixes 10.40.3.0/28 \
+    --delegations Microsoft.ContainerInstance/containerGroups
+  az container create -g $RG -n pgdebug --image postgres:16-alpine --vnet planeweb-vnet --subnet debug \
+    --command-line "sleep 3600" --os-type Linux --cpu 1 --memory 1
+  az container exec -g $RG -n pgdebug --exec-command "psql -h <postgresHost output> -U planeweb -d planeweb"
+  az container delete -g $RG -n pgdebug -y && az network vnet subnet delete -g $RG --vnet-name planeweb-vnet -n debug
+  ```
 - **Admin access:** make sure at least one of `ADMIN_EMAIL`/`ADMIN_PASSWORD`, `ENTRA_ADMIN_OBJECT_IDS`, or the Entra `Admin` app role is set, or nobody can manage users.
