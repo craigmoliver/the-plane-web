@@ -16,6 +16,10 @@ Rough cost: ~$15–20 Container App + ~$13–15 Postgres + a few $ storage/logs 
 ```bash
 SUB=<subscription id>; RG=planeweb-rg; LOC=eastus; REPO=craigmoliver/the-plane-web
 az account set -s $SUB
+# Register resource providers once (the deploy identity only has resource-group rights and can't).
+for p in Microsoft.App Microsoft.DBforPostgreSQL Microsoft.Network Microsoft.Storage Microsoft.OperationalInsights; do
+  az provider register -n $p --wait
+done
 az group create -n $RG -l $LOC
 
 # Identity GitHub Actions signs in as (OIDC; no secret stored in GitHub)
@@ -36,6 +40,7 @@ Create an environment named **production** (optionally with required reviewers t
 | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP` | from above |
 | `ADMIN_EMAIL` | bootstrap local admin (optional with Entra) |
 | `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID` | work-account sign-in, see docs/entra.md |
+| `LOCAL_LOGIN` | `false` for work accounts only (default `true`) |
 | `ENTRA_ADMIN_OBJECT_IDS` | comma-separated Entra object IDs made admin (yours, at least, unless you use the Entra `Admin` app role or `ADMIN_EMAIL`) |
 
 | Secrets | |
@@ -51,5 +56,5 @@ add that redirect URI to the Entra app registration (docs/entra.md).
 ## Notes
 - **adsb.lol from Azure:** free feeds may throttle cloud IPs. The app falls back to adsb.fi automatically; check `az containerapp logs show -n planeweb -g $RG` for 429s after the first deploy.
 - **Custom domain:** later, via `az containerapp hostname add` + managed certificate.
-- **Database access:** PostgreSQL is reachable only inside the virtual network. To inspect it, use the Azure portal's query editor or add a temporary jump box in the VNet.
+- **Database access:** PostgreSQL is reachable only inside the virtual network, so tools outside it (including the portal's query editor) can't connect. To inspect it, run a temporary container or VM in the VNet (e.g. `az container create` with `--vnet` and the `postgres` image, then `psql`), and delete it afterwards.
 - **Admin access:** make sure at least one of `ADMIN_EMAIL`/`ADMIN_PASSWORD`, `ENTRA_ADMIN_OBJECT_IDS`, or the Entra `Admin` app role is set, or nobody can manage users.

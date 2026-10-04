@@ -44,6 +44,7 @@ var suffix = uniqueString(resourceGroup().id)
 var pgServerName = '${name}-pg-${suffix}'
 var storageName = take('${name}st${suffix}', 24)
 var hasRegistryAuth = !empty(registryUsername)
+var appsSubnetPrefix = '10.40.0.0/23'
 var hasEntra = !empty(entraTenantId) && !empty(entraClientId)
 
 resource logs 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
@@ -89,7 +90,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
       {
         name: 'apps'   // Container Apps environment (workload profiles: /27 minimum)
         properties: {
-          addressPrefix: '10.40.0.0/23'
+          addressPrefix: appsSubnetPrefix
           delegations: [ { name: 'apps', properties: { serviceName: 'Microsoft.App/environments' } } ]
         }
       }
@@ -199,6 +200,8 @@ var baseEnv = [
   { name: 'PlaneWeb__Postgres__Username', value: 'planeweb' }
   { name: 'PlaneWeb__Postgres__Password', secretRef: 'pg-password' }
   { name: 'PlaneWeb__TrustForwardedHeaders', value: 'true' }
+  // Only the Container Apps ingress (inside the apps subnet) may send X-Forwarded-* headers.
+  { name: 'PlaneWeb__TrustedProxyNetworks', value: appsSubnetPrefix }
   { name: 'PlaneWeb__Auth__LocalLogin', value: string(localLogin) }
 ]
 var adminEnv = empty(adminEmail) || empty(adminPassword) ? [] : [
