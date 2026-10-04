@@ -64,6 +64,9 @@ Settings are stored in SQLite at `/data/planeweb.db` and flight trails in `/data
 | `TZ` | – | wall clock timezone |
 
 
+## Deploy to Azure
+See [docs/azure.md](docs/azure.md): Container Apps + PostgreSQL, deployed by GitHub Actions on every push to `main`.
+
 ## Develop
 ```bash
 PlaneWeb__Auth__AdminEmail=me@example.com PlaneWeb__Auth__AdminPassword=dev-password-1 dotnet run --project src/PlaneWeb.Web

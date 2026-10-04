@@ -1,0 +1,86 @@
+name: Deploy to Azure
+
+# Builds the image, pushes it to GitHub Container Registry, and deploys infra/main.bicep.
+# One-time setup: docs/azure.md (OIDC federated credential, repo variables and secrets).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write   # OIDC sign-in to Azure (no stored Azure credentials)
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  test:
+    # Skip until Azure is configured (docs/azure.md), so pushes to main don't fail.
+    if: vars.AZURE_CLIENT_ID != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet test -c Release
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - run: |
+          docker build -t "${{ steps.meta.outputs.image }}" .
+          docker push "${{ steps.meta.outputs.image }}"
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: production   # add required reviewers here to gate deploys
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - id: deploy
+        uses: azure/arm-deploy@v2
+        with:
+          scope: resourcegroup
+          resourceGroupName: ${{ vars.AZURE_RESOURCE_GROUP }}
+          template: infra/main.bicep
+          deploymentName: planeweb-${{ github.run_number }}
+          failOnStdErr: false
+          parameters: >-
+            image=${{ needs.build.outputs.image }}
+            registryUsername=${{ secrets.GHCR_USERNAME }}
+            registryPassword=${{ secrets.GHCR_TOKEN }}
+            postgresPassword=${{ secrets.POSTGRES_PASSWORD }}
+            adminEmail=${{ vars.ADMIN_EMAIL }}
+            adminPassword=${{ secrets.ADMIN_PASSWORD }}
+            entraTenantId=${{ vars.ENTRA_TENANT_ID }}
+            entraClientId=${{ vars.ENTRA_CLIENT_ID }}
+            entraClientSecret=${{ secrets.ENTRA_CLIENT_SECRET }}
+      - name: Smoke test
+        run: |
+          url="${{ steps.deploy.outputs.url }}"
+          for i in $(seq 1 40); do curl -fs "$url/healthz" && break; sleep 10; done
+          curl -fs "$url/healthz"
+          test "$(curl -s -o /dev/null -w '%{http_code}' "$url/settings")" = 302
+          echo "Deployed: $url  (Entra redirect URI: ${{ steps.deploy.outputs.entraRedirectUri }})"
