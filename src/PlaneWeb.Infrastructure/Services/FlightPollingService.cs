@@ -28,26 +28,21 @@ public sealed class FlightStateStore
     }
 }
 
+/// <summary>Polls the feed for one set of settings and records positions into the shared trail store.</summary>
 public sealed class FlightPollingService(
     IFlightDataProvider provider,
     IRouteLookup routes,
-    SettingsService settings,
-    FlightStateStore store,
     TrailStore trails,
     TraceBackfillService backfill,
-    IOptions<PlaneWebOptions> options,
-    TimeProvider time,
-    ILogger<FlightPollingService> log) : BackgroundService
+    TimeProvider time)
 {
     /// <summary>Polls once and records every mapped aircraft's position into the trail store.</summary>
     public async Task<WallSnapshot> PollAndRecordAsync(WallSettings s, CancellationToken ct)
     {
-        backfill.Enabled = s.TraceBackfill; // before polling, so an outage can't delay disabling it
         var snap = await PollAsync(s, ct);
         var now = time.GetUtcNow();
         // Stamp with completion time so the snapshot and the trail points it produced agree.
         snap = snap with { UpdatedAt = now };
-        trails.Window = TimeSpan.FromMinutes(Math.Clamp(s.TrailMinutes, 1, WallSettings.MaxTrailMinutes));
         foreach (var a in snap.MapAircraft)
         {
             trails.Record(a, now);
@@ -56,38 +51,6 @@ public sealed class FlightPollingService(
         }
         trails.Prune(now);
         return snap;
-    }
-
-    private CancellationTokenSource _wake = new();
-
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        // Refresh immediately when settings change.
-        settings.Changed += _ => { try { _wake.Cancel(); } catch (ObjectDisposedException) { } };
-
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            try
-            {
-                var s = await settings.GetAsync(stoppingToken);
-                store.Publish(await PollAndRecordAsync(s, stoppingToken));
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-            catch (Exception ex)
-            {
-                log.LogWarning(ex, "Poll failed");
-                // Keep the last successful UpdatedAt so stale data is not presented as fresh.
-                store.Publish(store.Current with { Error = $"Live data unavailable (last attempt {time.GetUtcNow().ToLocalTime():HH:mm:ss})" });
-            }
-
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, _wake.Token);
-            try { await Task.Delay(TimeSpan.FromSeconds(Math.Max(2, options.Value.PollSeconds)), time, linked.Token); }
-            catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
-            {
-                _wake.Dispose();
-                _wake = new CancellationTokenSource();
-            }
-        }
     }
 
     public async Task<WallSnapshot> PollAsync(WallSettings s, CancellationToken ct)

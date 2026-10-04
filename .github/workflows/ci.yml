@@ -25,12 +25,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build -t planeweb-web:ci .
-      - name: Smoke test
+      - name: Smoke test (SQLite)
         run: |
-          docker run -d --name fw -p 8080:8080 planeweb-web:ci
+          docker run -d --name fw -p 8080:8080 \
+            -e PlaneWeb__Auth__AdminEmail=ci@example.com -e PlaneWeb__Auth__AdminPassword=ci-password-123 \
+            planeweb-web:ci
           for i in $(seq 1 30); do curl -fs localhost:8080/healthz && break; sleep 2; done
           curl -fs localhost:8080/healthz || { docker logs fw; exit 1; }
+          # Protected pages redirect to sign-in.
+          test "$(curl -s -o /dev/null -w '%{http_code}' localhost:8080/settings)" = 302
+          test "$(curl -s -o /dev/null -w '%{http_code}' localhost:8080/api/aircraft/abc123)" = 401
           # Every script/stylesheet referenced by the page must be served (catches missing Blazor runtime).
-          for u in $(curl -fs localhost:8080/settings | grep -oE '(src|href)="[^"]+\.(js|css)"' | cut -d'"' -f2 | grep -v '^https'); do
+          for u in $(curl -fs localhost:8080/account/login | grep -oE '(src|href)="[^"]+\.(js|css)"' | cut -d'"' -f2 | grep -v '^https'); do
             curl -fs -o /dev/null "localhost:8080/$u" || { echo "MISSING $u"; exit 1; }
           done
+          docker logs fw 2>&1 | grep -q "Created bootstrap admin" || { docker logs fw; exit 1; }
+      - name: Smoke test (PostgreSQL)
+        run: |
+          docker network create pwnet
+          docker run -d --name pg --network pwnet -e POSTGRES_PASSWORD=ci -e POSTGRES_DB=planeweb postgres:17-alpine
+          for i in $(seq 1 30); do docker exec pg pg_isready -U postgres && break; sleep 2; done
+          docker run -d --name fwpg --network pwnet -p 8081:8080 \
+            -e PlaneWeb__Database=Postgres -e "ConnectionStrings__Default=Host=pg;Database=planeweb;Username=postgres;Password=ci" \
+            -e PlaneWeb__Auth__AdminEmail=ci@example.com -e PlaneWeb__Auth__AdminPassword=ci-password-123 \
+            planeweb-web:ci
+          for i in $(seq 1 30); do curl -fs localhost:8081/healthz && break; sleep 2; done
+          curl -fs localhost:8081/healthz || { docker logs fwpg; exit 1; }
+          docker logs fwpg 2>&1 | grep -q "Created bootstrap admin" || { docker logs fwpg; exit 1; }

@@ -1,3 +1,8 @@
+# Home server: SQLite in the planeweb-data volume.
+#   cp .env.example .env   (set the admin email/password), then: docker compose up -d --build
+# Optional overrides:
+#   PostgreSQL instead of SQLite:  docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d --build
+#   HTTPS via Caddy (needed for Microsoft sign-in off localhost): add -f docker-compose.https.yml
 services:
   planeweb:
     build: .
@@ -6,10 +11,11 @@ services:
     restart: unless-stopped
     ports:
       - "8095:8080"   # host:container; change the left side if 8095 is taken
+    env_file: .env
     environment:
       - PlaneWeb__Provider=adsb.lol   # or adsb.fi (the other is used as fallback)
       - PlaneWeb__PollSeconds=5
-      - TZ=America/New_York             # wall clock / local times
+      - TZ=America/New_York           # wall clock / local times
     volumes:
       - planeweb-data:/data
 

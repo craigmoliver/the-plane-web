@@ -1,0 +1,114 @@
+using System.Net;
+using System.Text.RegularExpressions;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc.Testing;
+
+namespace PlaneWeb.Tests;
+
+/// <summary>Boots the real app against a temporary SQLite file with a bootstrap admin, no live feeds.</summary>
+public sealed class AppFactory : WebApplicationFactory<Program>
+{
+    public const string AdminEmail = "admin@example.com", AdminPassword = "correct horse 42";
+    private readonly string _dir = Path.Combine(Path.GetTempPath(), "planeweb-it-" + Guid.NewGuid());
+
+    protected override void ConfigureWebHost(IWebHostBuilder b)
+    {
+        Directory.CreateDirectory(_dir);
+        b.UseEnvironment("Production");
+        b.UseSetting("ConnectionStrings:Default", $"Data Source={Path.Combine(_dir, "it.db")}");
+        b.UseSetting("PlaneWeb:TrailsFile", Path.Combine(_dir, "trails.json"));
+        b.UseSetting("PlaneWeb:Auth:AdminEmail", AdminEmail);
+        b.UseSetting("PlaneWeb:Auth:AdminPassword", AdminPassword);
+        // Unroutable feeds: polls fail fast instead of calling real services.
+        foreach (var k in new[] { "AdsbLolBaseUrl", "AdsbFiBaseUrl", "RoutesBaseUrl", "TraceBaseUrl", "AdsbdbBaseUrl", "PlanespottersBaseUrl", "LogoBaseUrl" })
+            b.UseSetting($"PlaneWeb:{k}", "http://127.0.0.1:9/");
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+        try { Directory.Delete(_dir, true); } catch (IOException) { }
+    }
+}
+
+public class AuthTests(AppFactory app) : IClassFixture<AppFactory>
+{
+    private HttpClient Client() => app.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false, HandleCookies = true });
+
+    [Theory]
+    [InlineData("/")]
+    [InlineData("/wall")]
+    [InlineData("/map")]
+    [InlineData("/settings")]
+    [InlineData("/admin/users")]
+    public async Task Pages_RedirectAnonymousUsersToLogin(string path)
+    {
+        var r = await Client().GetAsync(path);
+        Assert.Equal(HttpStatusCode.Redirect, r.StatusCode);
+        Assert.StartsWith("/account/login", r.Headers.Location!.PathAndQuery.Replace("http://localhost", ""));
+    }
+
+    [Theory]
+    [InlineData("/api/aircraft/abc123")]
+    [InlineData("/logos/DAL.png")]
+    public async Task Api_Returns401ForAnonymous(string path)
+    {
+        var r = await Client().GetAsync(path);
+        Assert.True(r.StatusCode == HttpStatusCode.Unauthorized, $"{r.StatusCode} -> {r.Headers.Location}");
+    }
+
+    [Fact]
+    public async Task HealthAndLoginPage_AreOpen()
+    {
+        var c = Client();
+        Assert.Equal(HttpStatusCode.OK, (await c.GetAsync("/healthz")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await c.GetAsync("/account/login")).StatusCode);
+    }
+
+    [Fact]
+    public async Task BlazorHub_RejectsAnonymous()
+    {
+        var r = await Client().PostAsync("/_blazor/negotiate?negotiateVersion=1", null);
+        Assert.True(r.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Redirect, $"got {r.StatusCode}");
+    }
+
+    internal static async Task<HttpResponseMessage> LoginAsync(HttpClient c, string email, string password)
+    {
+        var page = await (await c.GetAsync("/account/login")).Content.ReadAsStringAsync();
+        var token = Regex.Match(page, "name=\"__RequestVerificationToken\" value=\"([^\"]+)\"").Groups[1].Value;
+        return await c.PostAsync("/account/login", new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["__RequestVerificationToken"] = token, ["_handler"] = "login",
+            ["Input.Email"] = email, ["Input.Password"] = password,
+        }));
+    }
+
+    [Fact]
+    public async Task Admin_CanSignIn_AndReachPages()
+    {
+        var c = Client();
+        var r = await LoginAsync(c, AppFactory.AdminEmail, AppFactory.AdminPassword);
+        Assert.True(r.StatusCode is HttpStatusCode.Redirect or HttpStatusCode.Found, $"login returned {r.StatusCode}");
+        Assert.Equal(HttpStatusCode.OK, (await c.GetAsync("/settings")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await c.GetAsync("/admin/users")).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await c.GetAsync("/api/aircraft/not-hex")).StatusCode); // authorized, reaches the handler
+    }
+
+    [Fact]
+    public async Task WrongPassword_IsRejected()
+    {
+        var c = Client();
+        var r = await LoginAsync(c, AppFactory.AdminEmail, "wrong password 1");
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        Assert.Contains("Incorrect email or password", await r.Content.ReadAsStringAsync());
+        Assert.Equal(HttpStatusCode.Redirect, (await c.GetAsync("/settings")).StatusCode);
+    }
+
+    [Theory]
+    [InlineData("https://evil.example/x", "/")]
+    [InlineData("//evil.example/x", "/")]
+    [InlineData("/\\evil.example", "/")]
+    [InlineData("/map", "/map")]
+    public void ReturnUrl_IsLocalOnly(string input, string expected) =>
+        Assert.Equal(expected, PlaneWeb.Web.AuthSetup.SafeReturnUrl(input));
+}

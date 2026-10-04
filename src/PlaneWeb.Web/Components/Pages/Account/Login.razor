@@ -1,0 +1,80 @@
+@page "/account/login"
+@attribute [AllowAnonymous]
+@attribute [ExcludeFromInteractiveRouting]
+@attribute [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting(AuthSetup.LoginRateLimit)]
+@using Microsoft.AspNetCore.Identity
+@using Microsoft.Extensions.Options
+@using PlaneWeb.Infrastructure.Auth
+@using PlaneWeb.Infrastructure.Data
+@inject SignInManager<AppUser> SignIn
+@inject UserManager<AppUser> Users
+@inject AccountService Accounts
+@inject IOptions<AuthOptions> AuthOpts
+@inject NavigationManager Nav
+
+<PageTitle>Sign in · The Plane Web</PageTitle>
+
+<div class="account">
+    <div class="account-card">
+        <h1 class="led amber">THE PLANE WEB</h1>
+        <p class="dim">Sign in to continue.</p>
+
+        @if (Message is not null) { <p class="error" role="alert">@Message</p> }
+
+        @if (AuthOpts.Value.Entra.Enabled)
+        {
+            <form method="post" action="/account/external?returnUrl=@Uri.EscapeDataString(AuthSetup.SafeReturnUrl(ReturnUrl))">
+                <AntiforgeryToken />
+                <button class="btn primary wide" type="submit">Sign in with your work account</button>
+            </form>
+        }
+
+        @if (AuthOpts.Value.LocalLogin)
+        {
+            @if (AuthOpts.Value.Entra.Enabled) { <div class="or"><span>or</span></div> }
+            <EditForm Model="Input" FormName="login" OnValidSubmit="LoginAsync" method="post">
+                <label>Email <input name="Input.Email" type="email" autocomplete="username" required @bind-value="Input.Email" /></label>
+                <label>Password <input name="Input.Password" type="password" autocomplete="current-password" required @bind-value="Input.Password" /></label>
+                <label class="check"><input name="Input.Remember" type="checkbox" value="true" checked="@Input.Remember" /> Keep me signed in for 30 days (for wall displays)</label>
+                <button class="btn @(AuthOpts.Value.Entra.Enabled ? "" : "primary") wide" type="submit">Sign in</button>
+            </EditForm>
+        }
+    </div>
+</div>
+
+@code {
+    [SupplyParameterFromForm] private LoginInput Input { get; set; } = new();
+    [SupplyParameterFromQuery] private string? ReturnUrl { get; set; }
+    [SupplyParameterFromQuery(Name = "error")] private string? Error { get; set; }
+    private string? Message;
+
+    protected override void OnInitialized() => Message ??= Error;
+
+    private async Task LoginAsync()
+    {
+        if (!AuthOpts.Value.LocalLogin) return;
+        var user = await Users.FindByNameAsync(Input.Email.Trim());
+        // Work accounts have no password; give the same message as a wrong password.
+        if (user is null || user.IsExternal)
+        {
+            Message = "Incorrect email or password.";
+            return;
+        }
+        var r = await SignIn.PasswordSignInAsync(user, Input.Password, Input.Remember, lockoutOnFailure: true);
+        if (r.Succeeded)
+        {
+            await Accounts.RecordSignInAsync(user);
+            Nav.NavigateTo(user.MustChangePassword ? "/account/change-password" : AuthSetup.SafeReturnUrl(ReturnUrl), forceLoad: true);
+            return;
+        }
+        Message = r.IsLockedOut ? "This account is locked or disabled. Try again later or ask an admin."
+            : "Incorrect email or password.";
+    }
+
+    private sealed class LoginInput
+    {
+        public string Email { get; set; } = "";
+        public string Password { get; set; } = "";
+        public bool Remember { get; set; }
+    }
+}

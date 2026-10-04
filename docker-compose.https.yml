@@ -1,0 +1,25 @@
+# HTTPS in front of the app with Caddy. Set PLANEWEB_HOST in .env:
+#   a public DNS name (e.g. planes.example.com) -> real Let's Encrypt certificate (ports 80/443 must reach this host)
+#   a LAN name or IP -> Caddy's own certificate authority (browsers warn until you trust it)
+services:
+  planeweb:
+    ports: !reset []           # only reachable through Caddy
+    environment:
+      - PlaneWeb__TrustForwardedHeaders=true
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: planeweb-caddy
+    restart: unless-stopped
+    depends_on: [planeweb]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - PLANEWEB_HOST=${PLANEWEB_HOST:?set PLANEWEB_HOST in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+
+volumes:
+  caddy-data:

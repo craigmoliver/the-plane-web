@@ -1,10 +1,8 @@
 @page "/map"
 @using PlaneWeb.Core
 @using PlaneWeb.Infrastructure.Services
-@implements IAsyncDisposable
-@inject FlightStateStore Store
+@inherits UserFeedComponent
 @inject TrailStore Trails
-@inject SettingsService SettingsSvc
 @inject IJSRuntime JS
 
 <PageTitle>Map · The Plane Web</PageTitle>
@@ -18,26 +16,22 @@
         <nav>
             <a href="/wall">WALL</a>
             <a href="/settings">SETTINGS</a>
+            <UserMenu />
         </nav>
     </div>
 </div>
 
 @code {
-    private WallSettings? s;
-    private WallSnapshot snap = WallSnapshot.Empty;
+    private WallSettings? s => Settings;
+    private WallSnapshot snap => Snapshot;
     private ElementReference mapEl;
     private bool mapReady;
     private string summary = "Waiting for live data…";
     // What this browser has already received, so updates only carry new points.
     private readonly Dictionary<string, (int Rev, double LastT)> sent = new(StringComparer.OrdinalIgnoreCase);
-
-    protected override async Task OnInitializedAsync()
-    {
-        s = await SettingsSvc.GetAsync();
-        snap = Store.Current;
-        Store.Updated += OnSnapshot;
-        SettingsSvc.Changed += OnSettings;
-    }
+    // Aircraft seen in this user's own area. The trail store is shared by every area, so only these
+    // trails are sent (kept for a while after the aircraft leaves, like the trail itself).
+    private readonly Dictionary<string, DateTimeOffset> mine = new(StringComparer.OrdinalIgnoreCase);
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -55,21 +49,15 @@
         polygon = s.Polygon.Select(p => new[] { p.Lat, p.Lon }).ToArray(),
     };
 
-    private void OnSnapshot(WallSnapshot next) => InvokeAsync(async () =>
-    {
-        snap = next;
-        await Push();
-        StateHasChanged();
-    });
+    protected override Task OnSnapshotAsync() => Push();
 
-    private void OnSettings(WallSettings next) => InvokeAsync(async () =>
+    protected override async Task OnUserSettingsChangedAsync()
     {
-        s = next;
-        sent.Clear(); // filters may have changed: resend everything
+        sent.Clear(); // area or filters may have changed: resend everything
+        mine.Clear();
         if (mapReady) await SafeJs("planeWebLiveMap.setArea", AreaState(), true);
         await Push();
-        StateHasChanged();
-    });
+    }
 
     private async Task Push()
     {
@@ -81,6 +69,10 @@
                 : snap.Tracked.Select(t => t.Live?.Aircraft.Hex).OfType<string>())
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         bool Include(string hex) => s.MapShowAll || onWall.Contains(hex);
+
+        var nowUtc = DateTimeOffset.UtcNow;
+        foreach (var a in snap.MapAircraft) mine[a.Hex] = nowUtc;
+        foreach (var gone in mine.Where(kv => nowUtc - kv.Value > TrailStore.StaleAfter).Select(kv => kv.Key).ToList()) mine.Remove(gone);
 
         var aircraft = snap.MapAircraft.Where(a => a.Position.HasValue && Include(a.Hex)).Select(a => new
         {
@@ -99,7 +91,7 @@
         var trails = new List<object>();
         foreach (var t in Trails.Snapshot())
         {
-            if (!Include(t.Hex) || t.Points.Count == 0) continue;
+            if (!mine.ContainsKey(t.Hex) || !Include(t.Hex) || t.Points.Count == 0) continue;
             present.Add(t.Hex);
             var full = !sent.TryGetValue(t.Hex, out var prev) || prev.Rev != t.Revision;
             var pts = full ? t.Points : t.Points.Where(p => p.T > prev.LastT).ToList();
@@ -132,10 +124,9 @@
         catch (JSException) { return false; }
     }
 
-    public async ValueTask DisposeAsync()
+    public override async ValueTask DisposeAsync()
     {
-        Store.Updated -= OnSnapshot;
-        SettingsSvc.Changed -= OnSettings;
         if (mapReady) await SafeJs("planeWebLiveMap.dispose");
+        await base.DisposeAsync();
     }
 }

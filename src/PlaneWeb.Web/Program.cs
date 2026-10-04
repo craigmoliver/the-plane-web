@@ -1,3 +1,4 @@
+using PlaneWeb.Web;
 using Microsoft.AspNetCore.DataProtection;
 using PlaneWeb.Infrastructure;
 using PlaneWeb.Infrastructure.Data;
@@ -22,6 +23,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 builder.Services.AddPlaneWeb(builder.Configuration);
+builder.AddPlaneWebAuth();
 builder.Services.AddHealthChecks();
 // Persist data-protection keys (antiforgery/circuits) so restarts don't invalidate open pages.
 if (builder.Configuration["PlaneWeb:KeysDir"] is { Length: > 0 } keysDir)
@@ -36,16 +38,26 @@ await using (var scope = app.Services.CreateAsyncScope())
     await using var db = await factory.CreateDbContextAsync();
     await db.Database.MigrateAsync();
 }
+await app.InitializeAuthAsync();
+
+if (app.Configuration.GetValue<bool>("PlaneWeb:TrustForwardedHeaders")) app.UseForwardedHeaders();
 
 if (!app.Environment.IsDevelopment())
 {
     app.UseExceptionHandler("/Error", createScopeForErrors: true);
 }
-app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true);
+// Friendly error pages for browsers; API and image callers keep the raw status code (e.g. 401).
+app.UseWhen(ctx => !ctx.Request.Path.StartsWithSegments("/api") && !ctx.Request.Path.StartsWithSegments("/logos"),
+    b => b.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true));
 
+app.UseAuthentication();
+app.UseAuthorization();
+app.UseMustChangePassword();
+app.UseRateLimiter();
 app.UseAntiforgery();
 
-app.MapHealthChecks("/healthz");
+app.MapHealthChecks("/healthz").AllowAnonymous();
+app.MapAccountEndpoints();
 app.MapGet("/logos/{icao}.png", async (string icao, AirlineLogoService logos, HttpContext ctx, CancellationToken ct) =>
 {
     var path = await logos.GetLogoPathAsync(icao, ct);
@@ -54,7 +66,7 @@ app.MapGet("/logos/{icao}.png", async (string icao, AirlineLogoService logos, Ht
     return Results.File(path, "image/png");
 });
 app.MapGet("/api/aircraft/{hex}", async (string hex, string? reg, string? callsign,
-    AircraftInfoService info, PlaneWeb.Core.IRouteLookup routes, PlaneWeb.Infrastructure.Services.FlightStateStore state,
+    AircraftInfoService info, PlaneWeb.Core.IRouteLookup routes, PlaneWeb.Infrastructure.Services.PollerRegistry pollers,
     HttpContext ctx, CancellationToken ct) =>
 {
     var details = await info.GetAsync(hex, string.IsNullOrWhiteSpace(reg) ? null : reg.Trim(), ct);
@@ -62,7 +74,7 @@ app.MapGet("/api/aircraft/{hex}", async (string hex, string? reg, string? callsi
     PlaneWeb.Core.FlightRoute? route = null;
     // Only look up routes for a callsign the aircraft is actually broadcasting right now,
     // so clients can't drive arbitrary outbound lookups or grow the route cache.
-    var live = state.Current.MapAircraft.FirstOrDefault(a => string.Equals(a.Hex, hex, StringComparison.OrdinalIgnoreCase));
+    var live = pollers.FindLive(hex);
     if (!string.IsNullOrWhiteSpace(callsign) && live?.Callsign is { } liveCs &&
         string.Equals(liveCs, callsign.Trim(), StringComparison.OrdinalIgnoreCase))
         try { route = await routes.GetRouteAsync(callsign.Trim(), ct); } catch (HttpRequestException) { }
@@ -76,9 +88,10 @@ app.MapGet("/api/aircraft/{hex}", async (string hex, string? reg, string? callsi
         },
     });
 });
-app.MapStaticAssets();
+app.MapStaticAssets().AllowAnonymous(); // the login page needs CSS/JS before sign-in
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 
 app.Run();
 return 0;
+public partial class Program;

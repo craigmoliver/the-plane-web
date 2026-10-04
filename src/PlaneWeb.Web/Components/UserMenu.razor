@@ -1,0 +1,11 @@
+@* Signed-in user's name with password and sign-out actions; used in page headers/footers. *@
+<AuthorizeView>
+    <span class="user-menu">
+        <span class="user-name" title="@context.User.Identity?.Name">@(context.User.FindFirst("display_name")?.Value ?? context.User.Identity?.Name)</span>
+        <AuthorizeView Roles="Admin" Context="admin"><a href="/admin/users">Users</a></AuthorizeView>
+        <form method="post" action="/account/logout" class="inline-form">
+            <AntiforgeryToken />
+            <button type="submit" class="link-button">Sign out</button>
+        </form>
+    </span>
+</AuthorizeView>

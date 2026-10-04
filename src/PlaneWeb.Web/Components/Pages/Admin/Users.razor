@@ -1,0 +1,175 @@
+@page "/admin/users"
+@attribute [Authorize(Roles = "Admin")]
+@using Microsoft.AspNetCore.Identity
+@using Microsoft.EntityFrameworkCore
+@using Microsoft.Extensions.Options
+@using PlaneWeb.Infrastructure.Auth
+@using PlaneWeb.Infrastructure.Data
+@using PlaneWeb.Infrastructure.Services
+@inject IServiceScopeFactory Scopes
+@inject IOptions<AuthOptions> AuthOpts
+@inject SettingsService SettingsSvc
+
+<PageTitle>Users · The Plane Web</PageTitle>
+
+<div class="settings">
+    <header class="settings-header">
+        <h1>Users</h1>
+        <nav><a href="/settings" class="btn">Settings</a><a href="/map" class="btn">Live Map</a><a href="/wall" class="btn primary">Open Wall ▶</a></nav>
+    </header>
+
+    @if (AuthOpts.Value.Entra.Enabled)
+    {
+        <p class="hint">Anyone in your organization can sign in with their work account; their account appears here on first sign-in.
+            Grant admin with the Entra app role <code>Admin</code> or <code>PlaneWeb__Auth__Entra__AdminEmails</code>, or the button below.</p>
+    }
+
+    @if (notice is not null) { <p class="status" role="status">@notice</p> }
+    @if (error is not null) { <p class="error" role="alert">@error</p> }
+    @if (tempPassword is not null)
+    {
+        <div class="panel temp-password">
+            <p>Temporary password for <b>@tempFor</b>, shown once. Share it securely; they'll choose a new one at first sign-in.</p>
+            <code class="mono big">@tempPassword</code>
+            <button class="btn small" @onclick="() => tempPassword = null">Done</button>
+        </div>
+    }
+
+    @if (AuthOpts.Value.LocalLogin)
+    {
+        <section class="panel">
+            <h2>Add local account</h2>
+            <form class="row" @onsubmit="CreateAsync" @onsubmit:preventDefault>
+                <label>Email <input type="email" @bind="newEmail" required /></label>
+                <label>Name <input @bind="newName" maxlength="80" /></label>
+                <label class="check"><input type="checkbox" @bind="newAdmin" /> Admin</label>
+                <button class="btn primary" type="submit">Create</button>
+            </form>
+        </section>
+    }
+
+    <section class="panel">
+        <table class="users">
+            <thead><tr><th>User</th><th>Type</th><th>Role</th><th>Last sign-in</th><th>Status</th><th></th></tr></thead>
+            <tbody>
+                @foreach (var u in rows)
+                {
+                    var self = u.Id == myId;
+                    <tr @key="u.Id" class="@(u.Disabled ? "disabled" : "")">
+                        <td><b>@(u.Name ?? u.UserName)</b><br /><small class="dim">@u.UserName</small></td>
+                        <td>@(u.External ? "Work account" : "Local")</td>
+                        <td>@(u.Admin ? "Admin" : "User")</td>
+                        <td>@(u.LastSignIn?.ToLocalTime().ToString("g") ?? "never")</td>
+                        <td>@(u.Disabled ? "Disabled" : u.MustChange ? "Must change password" : "Active")</td>
+                        <td><div class="actions">
+                            @if (!self)
+                            {
+                                <button class="btn small" @onclick="() => ToggleAdminAsync(u)">@(u.Admin ? "Remove admin" : "Make admin")</button>
+                                <button class="btn small" @onclick="() => ToggleDisabledAsync(u)">@(u.Disabled ? "Enable" : "Disable")</button>
+                                @if (!u.External)
+                                {
+                                    <button class="btn small" @onclick="() => ResetPasswordAsync(u)">Reset password</button>
+                                }
+                                <button class="btn small" @onclick="() => SignOutEverywhereAsync(u)">Sign out everywhere</button>
+                                <button class="btn small danger" @onclick="() => DeleteAsync(u)">Delete</button>
+                            }
+                            else { <span class="dim">(you)</span> }
+                        </div></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </section>
+</div>
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState> AuthState { get; set; } = default!;
+    private sealed record Row(string Id, string UserName, string? Name, bool External, bool Admin, bool Disabled, bool MustChange, DateTimeOffset? LastSignIn);
+    private List<Row> rows = [];
+    private string? myId, notice, error, tempPassword, tempFor, newEmail, newName;
+    private bool newAdmin;
+
+    protected override async Task OnInitializedAsync()
+    {
+        myId = (await AuthState).User.UserId();
+        await LoadAsync();
+    }
+
+    // A fresh scope per operation: UserManager and DbContext must not be shared across concurrent Blazor events.
+    private async Task<T> WithUsers<T>(Func<UserManager<AppUser>, Task<T>> f)
+    {
+        await using var scope = Scopes.CreateAsyncScope();
+        return await f(scope.ServiceProvider.GetRequiredService<UserManager<AppUser>>());
+    }
+
+    private async Task LoadAsync() => rows = await WithUsers(async um =>
+    {
+        var admins = (await um.GetUsersInRoleAsync(Roles.Admin)).Select(a => a.Id).ToHashSet();
+        var now = DateTimeOffset.UtcNow;
+        return (await um.Users.AsNoTracking().ToListAsync())
+            .OrderBy(u => u.DisplayName ?? u.UserName)
+            .Select(u => new Row(u.Id, u.UserName!, u.DisplayName, u.IsExternal, admins.Contains(u.Id),
+                u.LockoutEnd is { } end && end > now, u.MustChangePassword, u.LastSignInAt))
+            .ToList();
+    });
+
+    private async Task Run(Func<UserManager<AppUser>, AppUser, Task<IdentityResult>> action, Row row, string done)
+    {
+        notice = error = null;
+        var r = await WithUsers(async um =>
+            await um.FindByIdAsync(row.Id) is { } u ? await action(um, u) : IdentityResult.Failed(new IdentityError { Description = "User not found." }));
+        if (r.Succeeded) notice = done; else error = string.Join(" ", r.Errors.Select(e => e.Description));
+        await LoadAsync();
+    }
+
+    private async Task CreateAsync()
+    {
+        notice = error = null;
+        if (string.IsNullOrWhiteSpace(newEmail)) return;
+        var email = newEmail.Trim();
+        var pw = AccountService.GenerateTemporaryPassword();
+        IdentityResult r;
+        await using (var scope = Scopes.CreateAsyncScope())
+            r = await scope.ServiceProvider.GetRequiredService<AccountService>()
+                .CreateLocalAsync(email, string.IsNullOrWhiteSpace(newName) ? null : newName.Trim(), pw, newAdmin);
+        if (!r.Succeeded) { error = string.Join(" ", r.Errors.Select(e => e.Description)); return; }
+        (tempPassword, tempFor) = (pw, email);
+        newEmail = newName = null; newAdmin = false;
+        await LoadAsync();
+    }
+
+    private Task ToggleAdminAsync(Row u) => Run(async (um, user) =>
+    {
+        var r = u.Admin ? await um.RemoveFromRoleAsync(user, Roles.Admin) : await um.AddToRoleAsync(user, Roles.Admin);
+        return r.Succeeded ? await um.UpdateSecurityStampAsync(user) : r; // role change applies on next check
+    }, u, u.Admin ? "Admin removed." : "Admin granted.");
+
+    private Task ToggleDisabledAsync(Row u) => Run(async (um, user) =>
+    {
+        var r = await um.SetLockoutEndDateAsync(user, u.Disabled ? null : DateTimeOffset.MaxValue);
+        return r.Succeeded ? await um.UpdateSecurityStampAsync(user) : r; // ends their sessions within a minute
+    }, u, u.Disabled ? "Account enabled." : "Account disabled and signed out.");
+
+    private async Task ResetPasswordAsync(Row u)
+    {
+        var pw = AccountService.GenerateTemporaryPassword();
+        await Run(async (um, user) =>
+        {
+            var token = await um.GeneratePasswordResetTokenAsync(user);
+            var r = await um.ResetPasswordAsync(user, token, pw); // also changes the security stamp
+            if (!r.Succeeded) return r;
+            user.MustChangePassword = true;
+            return await um.UpdateAsync(user);
+        }, u, "Password reset.");
+        if (error is null) (tempPassword, tempFor) = (pw, u.UserName);
+    }
+
+    private Task SignOutEverywhereAsync(Row u) =>
+        Run((um, user) => um.UpdateSecurityStampAsync(user), u, $"{u.UserName} will be signed out within a minute.");
+
+    private async Task DeleteAsync(Row u)
+    {
+        await Run((um, user) => um.DeleteAsync(user), u, $"Deleted {u.UserName}.");
+        SettingsSvc.Forget(u.Id);
+    }
+}

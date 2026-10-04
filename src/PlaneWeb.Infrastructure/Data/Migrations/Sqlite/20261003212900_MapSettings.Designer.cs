@@ -7,11 +7,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
 
-namespace PlaneWeb.Infrastructure.Data.Migrations
+namespace PlaneWeb.Infrastructure.Data.Migrations.Sqlite
 {
-    [DbContext(typeof(PlaneWebDbContext))]
-    [Migration("20261003174205_Initial")]
-    partial class Initial
+    [DbContext(typeof(SqlitePlaneWebDbContext))]
+    [Migration("20261003212900_MapSettings")]
+    partial class MapSettings
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -37,6 +37,13 @@ namespace PlaneWeb.Infrastructure.Data.Migrations
                         .HasColumnType("INTEGER");
 
                     b.Property<bool>("IncludeLight")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("MapLayer")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("MapShowAll")
                         .HasColumnType("INTEGER");
 
                     b.Property<int>("MaxAltitudeFt")
@@ -68,9 +75,15 @@ namespace PlaneWeb.Infrastructure.Data.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<bool>("TraceBackfill")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("TrackedFlights")
                         .IsRequired()
                         .HasColumnType("TEXT");
+
+                    b.Property<int>("TrailMinutes")
+                        .HasColumnType("INTEGER");
 
                     b.Property<int>("Units")
                         .HasColumnType("INTEGER");

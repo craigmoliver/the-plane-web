@@ -164,8 +164,7 @@ public class TrailRecordingTests
             new AdsbLolTraceClient(new HttpClient(handler) { BaseAddress = new Uri("https://adsb.lol/") }),
             trails, opt, TimeProvider.System,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<TraceBackfillService>.Instance);
-        var svc = new FlightPollingService(new Fixed(aircraft), new NoRoutes(), null!, new FlightStateStore(), trails, backfill,
-            opt, TimeProvider.System, Microsoft.Extensions.Logging.Abstractions.NullLogger<FlightPollingService>.Instance);
+        var svc = new FlightPollingService(new Fixed(aircraft), new NoRoutes(), trails, backfill, TimeProvider.System);
         var settings = new WallSettings { CenterLat = 34.1, CenterLon = -84.5, RadiusNm = 10, TrailMinutes = 15 };
 
         var snap = await svc.PollAndRecordAsync(settings, default);

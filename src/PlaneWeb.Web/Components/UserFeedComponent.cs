@@ -1,0 +1,84 @@
+using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Authorization;
+using PlaneWeb.Core;
+using PlaneWeb.Infrastructure.Services;
+
+namespace PlaneWeb.Web.Components;
+
+/// <summary>
+/// Base for pages that show the signed-in user's live data: loads their settings, holds a lease on the
+/// poller for their area, and follows changes to either. Other users' settings changes are ignored.
+/// </summary>
+public abstract class UserFeedComponent : ComponentBase, IAsyncDisposable
+{
+    [Inject] protected SettingsService SettingsSvc { get; set; } = default!;
+    [Inject] private PollerRegistry Pollers { get; set; } = default!;
+    [CascadingParameter] private Task<AuthenticationState> AuthState { get; set; } = default!;
+
+    protected string? UserId { get; private set; }
+    protected WallSettings? Settings { get; set; }
+    protected WallSnapshot Snapshot { get; private set; } = WallSnapshot.Empty;
+    private PollerLease? _lease;
+    private bool _disposed;
+
+    protected override async Task OnInitializedAsync()
+    {
+        UserId = (await AuthState).User.UserId();
+        Settings = await SettingsSvc.GetAsync(UserId);
+        Attach(Settings);
+        SettingsSvc.Changed += OnSettingsEvent;
+    }
+
+    /// <summary>Called on the renderer's sync context after a new snapshot arrives.</summary>
+    protected virtual Task OnSnapshotAsync() => Task.CompletedTask;
+
+    /// <summary>Called after this user's saved settings change (the lease is already moved).</summary>
+    protected virtual Task OnUserSettingsChangedAsync() => Task.CompletedTask;
+
+    private void Attach(WallSettings s)
+    {
+        var old = _lease;
+        _lease = Pollers.Acquire(s);
+        if (old?.Store != _lease.Store)
+        {
+            if (old is not null) old.Store.Updated -= OnSnapshotEvent;
+            _lease.Store.Updated += OnSnapshotEvent;
+        }
+        old?.Dispose();
+        Snapshot = _lease.Store.Current;
+    }
+
+    private void OnSnapshotEvent(WallSnapshot next) => _ = InvokeAsync(async () =>
+    {
+        if (_disposed) return;
+        Snapshot = next;
+        await OnSnapshotAsync();
+        StateHasChanged();
+    });
+
+    private void OnSettingsEvent(string? userId, WallSettings next)
+    {
+        if (userId != UserId) return;
+        _ = InvokeAsync(async () =>
+        {
+            if (_disposed) return;
+            Settings = next;
+            Attach(next);
+            await OnUserSettingsChangedAsync();
+            StateHasChanged();
+        });
+    }
+
+    public virtual ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        SettingsSvc.Changed -= OnSettingsEvent;
+        if (_lease is not null)
+        {
+            _lease.Store.Updated -= OnSnapshotEvent;
+            _lease.Dispose();
+        }
+        GC.SuppressFinalize(this);
+        return ValueTask.CompletedTask;
+    }
+}

@@ -1,0 +1,202 @@
+using System.Security.Claims;
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.Antiforgery;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.OpenIdConnect;
+using Microsoft.AspNetCore.Components.Authorization;
+using Microsoft.AspNetCore.Components.Server;
+using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.Extensions.Options;
+using PlaneWeb.Infrastructure.Auth;
+using PlaneWeb.Infrastructure.Data;
+
+namespace PlaneWeb.Web;
+
+public static class AuthSetup
+{
+    public const string MustChangePasswordClaim = "pw_change";
+    public const string LoginRateLimit = "login";
+
+    public static void AddPlaneWebAuth(this WebApplicationBuilder builder)
+    {
+        var services = builder.Services;
+        var section = builder.Configuration.GetSection("PlaneWeb:Auth");
+        services.Configure<AuthOptions>(section);
+        var auth = section.Get<AuthOptions>() ?? new AuthOptions();
+
+        services.AddIdentity<AppUser, IdentityRole>(AccountService.ConfigureIdentity)
+            .AddEntityFrameworkStores<PlaneWebDbContext>()
+            .AddDefaultTokenProviders()
+            .AddClaimsPrincipalFactory<AppClaimsFactory>();
+
+        // Disabling a user or "sign out everywhere" changes the security stamp; check it every minute.
+        services.Configure<SecurityStampValidatorOptions>(o => o.ValidationInterval = TimeSpan.FromMinutes(1));
+        services.ConfigureApplicationCookie(o =>
+        {
+            o.LoginPath = "/account/login";
+            o.LogoutPath = "/account/logout";
+            o.AccessDeniedPath = "/account/denied";
+            o.ExpireTimeSpan = TimeSpan.FromDays(30); // long-lived "remember me" for wall displays
+            o.SlidingExpiration = true;
+            o.Cookie.Name = "planeweb.auth";
+            o.Cookie.HttpOnly = true;
+            o.Cookie.SameSite = SameSiteMode.Lax; // required for the Microsoft sign-in redirect
+            o.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest; // HTTPS in Azure / behind Caddy, HTTP allowed on a LAN
+            // API calls get 401/403 instead of a redirect to the login page.
+            o.Events.OnRedirectToLogin = ctx => ApiAware(ctx, StatusCodes.Status401Unauthorized);
+            o.Events.OnRedirectToAccessDenied = ctx => ApiAware(ctx, StatusCodes.Status403Forbidden);
+        });
+
+        if (auth.Entra.Enabled)
+        {
+            services.AddAuthentication().AddOpenIdConnect(AccountService.EntraProvider, "Work account", o =>
+            {
+                o.SignInScheme = IdentityConstants.ExternalScheme;
+                o.Authority = $"{auth.Entra.Instance.TrimEnd('/')}/{auth.Entra.TenantId}/v2.0";
+                o.ClientId = auth.Entra.ClientId;
+                o.ClientSecret = auth.Entra.ClientSecret;
+                o.ResponseType = "code";
+                o.UsePkce = true;
+                o.CallbackPath = "/signin-oidc";
+                o.Scope.Clear();
+                foreach (var s in new[] { "openid", "profile", "email" }) o.Scope.Add(s);
+                o.TokenValidationParameters.NameClaimType = "name";
+                o.SaveTokens = false;
+            });
+        }
+
+        services.AddAuthorizationBuilder()
+            // Everything requires a signed-in user unless marked [AllowAnonymous].
+            .SetFallbackPolicy(new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build());
+        services.AddCascadingAuthenticationState();
+        services.AddScoped<AuthenticationStateProvider, RevalidatingIdentityStateProvider>();
+        services.AddScoped<AccountService>();
+
+        services.AddRateLimiter(o =>
+        {
+            o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+            // Per client IP; generous because a company may share one public IP. Account lockout stops guessing.
+            o.AddPolicy(LoginRateLimit, ctx => RateLimitPartition.GetFixedWindowLimiter(
+                ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                _ => new FixedWindowRateLimiterOptions { PermitLimit = 30, Window = TimeSpan.FromMinutes(1) }));
+        });
+
+        // Behind Azure Container Apps or a reverse proxy, trust X-Forwarded-* so redirects use https.
+        if (builder.Configuration.GetValue<bool>("PlaneWeb:TrustForwardedHeaders"))
+            services.Configure<ForwardedHeadersOptions>(o =>
+            {
+                o.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto | ForwardedHeaders.XForwardedHost;
+                o.KnownIPNetworks.Clear();
+                o.KnownProxies.Clear();
+            });
+    }
+
+    private static Task ApiAware(RedirectContext<Microsoft.AspNetCore.Authentication.Cookies.CookieAuthenticationOptions> ctx, int status)
+    {
+        if (ctx.Request.Path.StartsWithSegments("/api") || ctx.Request.Path.StartsWithSegments("/logos"))
+        {
+            ctx.Response.StatusCode = status;
+            return Task.CompletedTask;
+        }
+        ctx.Response.Redirect(ctx.RedirectUri);
+        return Task.CompletedTask;
+    }
+
+    public static async Task InitializeAuthAsync(this WebApplication app)
+    {
+        await using var scope = app.Services.CreateAsyncScope();
+        var accounts = scope.ServiceProvider.GetRequiredService<AccountService>();
+        await accounts.EnsureRolesAsync();
+        await accounts.EnsureBootstrapAdminAsync(scope.ServiceProvider.GetRequiredService<IOptions<AuthOptions>>().Value);
+    }
+
+    /// <summary>Sends users with a temporary password to the change-password page before anything else.</summary>
+    public static IApplicationBuilder UseMustChangePassword(this IApplicationBuilder app) => app.Use(async (ctx, next) =>
+    {
+        var p = ctx.Request.Path;
+        if (ctx.User.HasClaim(MustChangePasswordClaim, "1") && HttpMethods.IsGet(ctx.Request.Method) &&
+            !p.StartsWithSegments("/account") && !p.StartsWithSegments("/_framework") && !p.StartsWithSegments("/_blazor") &&
+            !Path.HasExtension(p.Value) && !p.StartsWithSegments("/healthz"))
+        {
+            ctx.Response.Redirect("/account/change-password");
+            return;
+        }
+        await next();
+    });
+
+    public static void MapAccountEndpoints(this WebApplication app)
+    {
+        var account = app.MapGroup("/account");
+
+        account.MapPost("/logout", async (HttpContext ctx, IAntiforgery af, SignInManager<AppUser> signIn) =>
+        {
+            await af.ValidateRequestAsync(ctx);
+            await signIn.SignOutAsync();
+            return Results.LocalRedirect("/account/login");
+        }).AllowAnonymous();
+
+        account.MapPost("/external", async (HttpContext ctx, IAntiforgery af, IOptions<AuthOptions> opt, string? returnUrl) =>
+        {
+            await af.ValidateRequestAsync(ctx);
+            if (!opt.Value.Entra.Enabled) return Results.NotFound();
+            var props = new AuthenticationProperties
+            {
+                RedirectUri = $"/account/external-callback?returnUrl={Uri.EscapeDataString(SafeReturnUrl(returnUrl))}",
+            };
+            return Results.Challenge(props, [AccountService.EntraProvider]);
+        }).AllowAnonymous().RequireRateLimiting(LoginRateLimit);
+
+        account.MapGet("/external-callback", async (HttpContext ctx, string? returnUrl, AccountService accounts,
+            SignInManager<AppUser> signIn, IOptions<AuthOptions> opt) =>
+        {
+            var result = await ctx.AuthenticateAsync(IdentityConstants.ExternalScheme);
+            await ctx.SignOutAsync(IdentityConstants.ExternalScheme);
+            if (!result.Succeeded || ExternalIdentity.FromPrincipal(result.Principal) is not { } id)
+                return Results.LocalRedirect("/account/login?error=" + Uri.EscapeDataString("Microsoft sign-in failed."));
+            var (user, error) = await accounts.ProvisionExternalAsync(id, opt.Value.Entra);
+            if (user is null)
+                return Results.LocalRedirect("/account/login?error=" + Uri.EscapeDataString(error ?? "Sign-in refused."));
+            await signIn.SignInAsync(user, isPersistent: true);
+            await accounts.RecordSignInAsync(user);
+            return Results.LocalRedirect(SafeReturnUrl(returnUrl));
+        }).AllowAnonymous().RequireRateLimiting(LoginRateLimit);
+    }
+
+    /// <summary>Only same-site relative paths; anything else goes to the home page (prevents open redirects).</summary>
+    public static string SafeReturnUrl(string? url) =>
+        !string.IsNullOrEmpty(url) && url.StartsWith('/') && !url.StartsWith("//") && !url.StartsWith("/\\") ? url : "/";
+
+    public static string? UserId(this ClaimsPrincipal p) => p.FindFirstValue(ClaimTypes.NameIdentifier);
+}
+
+/// <summary>Adds the display name and the must-change-password flag to the sign-in cookie.</summary>
+public sealed class AppClaimsFactory(UserManager<AppUser> users, RoleManager<IdentityRole> roles, IOptions<IdentityOptions> o)
+    : UserClaimsPrincipalFactory<AppUser, IdentityRole>(users, roles, o)
+{
+    protected override async Task<ClaimsIdentity> GenerateClaimsAsync(AppUser user)
+    {
+        var id = await base.GenerateClaimsAsync(user);
+        if (!string.IsNullOrWhiteSpace(user.DisplayName)) id.AddClaim(new Claim("display_name", user.DisplayName));
+        if (user.MustChangePassword) id.AddClaim(new Claim(AuthSetup.MustChangePasswordClaim, "1"));
+        return id;
+    }
+}
+
+/// <summary>Re-checks open Blazor connections every minute so disabled or signed-out users lose access promptly.</summary>
+public sealed class RevalidatingIdentityStateProvider(ILoggerFactory lf, IServiceScopeFactory scopes, IOptions<IdentityOptions> o)
+    : RevalidatingServerAuthenticationStateProvider(lf)
+{
+    protected override TimeSpan RevalidationInterval => TimeSpan.FromMinutes(1);
+
+    protected override async Task<bool> ValidateAuthenticationStateAsync(AuthenticationState state, CancellationToken ct)
+    {
+        await using var scope = scopes.CreateAsyncScope();
+        var users = scope.ServiceProvider.GetRequiredService<UserManager<AppUser>>();
+        var user = await users.GetUserAsync(state.User);
+        if (user is null || await users.IsLockedOutAsync(user)) return false;
+        if (!users.SupportsUserSecurityStamp) return true;
+        var stamp = state.User.FindFirstValue(o.Value.ClaimsIdentity.SecurityStampClaimType);
+        return stamp == await users.GetSecurityStampAsync(user);
+    }
+}

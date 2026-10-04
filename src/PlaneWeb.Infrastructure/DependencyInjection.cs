@@ -11,13 +11,35 @@ namespace PlaneWeb.Infrastructure;
 
 public static class DependencyInjection
 {
+    public static bool IsPostgres(IConfiguration config) =>
+        string.Equals(config["PlaneWeb:Database"], "Postgres", StringComparison.OrdinalIgnoreCase);
+
+    private sealed class FactoryAdapter<T>(IDbContextFactory<T> inner) : IDbContextFactory<PlaneWebDbContext> where T : PlaneWebDbContext
+    {
+        public PlaneWebDbContext CreateDbContext() => inner.CreateDbContext();
+    }
+
     public static IServiceCollection AddPlaneWeb(this IServiceCollection services, IConfiguration config)
     {
         services.Configure<PlaneWebOptions>(config.GetSection("PlaneWeb"));
         services.AddSingleton(TimeProvider.System);
 
+        // Database: SQLite (home server, default) or PostgreSQL (Azure). Each has its own migrations.
         var cs = config.GetConnectionString("Default") ?? "Data Source=planeweb.db";
-        services.AddDbContextFactory<PlaneWebDbContext>(o => o.UseSqlite(cs));
+        if (IsPostgres(config))
+        {
+            services.AddDbContextFactory<PostgresPlaneWebDbContext>(o => o.UseNpgsql(cs));
+            services.AddSingleton<IDbContextFactory<PlaneWebDbContext>>(sp =>
+                new FactoryAdapter<PostgresPlaneWebDbContext>(sp.GetRequiredService<IDbContextFactory<PostgresPlaneWebDbContext>>()));
+        }
+        else
+        {
+            services.AddDbContextFactory<SqlitePlaneWebDbContext>(o => o.UseSqlite(cs));
+            services.AddSingleton<IDbContextFactory<PlaneWebDbContext>>(sp =>
+                new FactoryAdapter<SqlitePlaneWebDbContext>(sp.GetRequiredService<IDbContextFactory<SqlitePlaneWebDbContext>>()));
+        }
+        // Scoped context for ASP.NET Core Identity's stores.
+        services.AddScoped<PlaneWebDbContext>(sp => sp.GetRequiredService<IDbContextFactory<PlaneWebDbContext>>().CreateDbContext());
 
         const string ua = "PlaneWeb/1.0 (+self-hosted)";
         services.AddHttpClient<AdsbLolProvider>(c =>
@@ -90,13 +112,14 @@ public static class DependencyInjection
         });
 
         services.AddSingleton<SettingsService>();
-        services.AddSingleton<FlightStateStore>();
         services.AddSingleton<TrailStore>();
+        services.AddSingleton<FlightPollingService>();
         services.AddSingleton<TraceBackfillService>();
         // Order matters: restore saved trails before the first poll.
         services.AddHostedService<TrailPersistenceService>();
         services.AddHostedService(sp => sp.GetRequiredService<TraceBackfillService>());
-        services.AddHostedService<FlightPollingService>();
+        services.AddSingleton<PollerRegistry>();
+        services.AddHostedService(sp => sp.GetRequiredService<PollerRegistry>());
         return services;
     }
 }

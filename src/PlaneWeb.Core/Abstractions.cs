@@ -18,7 +18,9 @@ public interface IRouteLookup
 /// <summary>Persisted user settings (single row).</summary>
 public sealed class WallSettings
 {
-    public int Id { get; set; } = 1;
+    public int Id { get; set; }
+    /// <summary>Owner; null for the shared default that new users start from.</summary>
+    public string? UserId { get; set; }
     public DisplayMode Mode { get; set; } = DisplayMode.Area;
     public AreaShape Shape { get; set; } = AreaShape.Radius;
     public double CenterLat { get; set; } = 34.1015;   // Woodstock, GA default
