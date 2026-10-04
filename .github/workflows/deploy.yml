@@ -90,7 +90,7 @@ jobs:
               entraTenantId:      { value: env.ENTRA_TENANT_ID },
               entraClientId:      { value: env.ENTRA_CLIENT_ID },
               entraClientSecret:  { value: env.ENTRA_CLIENT_SECRET },
-              localLogin:         { value: ((env.LOCAL_LOGIN // "true") | ascii_downcase) != "false" },
+              localLogin:         { value: (((env.LOCAL_LOGIN // "true") | ascii_downcase) != "false") },
               entraAdminObjectIds:{ value: (env.ENTRA_ADMIN_OBJECT_IDS | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))) }
             }
           }' > "$RUNNER_TEMP/params.json"
