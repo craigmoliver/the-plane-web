@@ -79,6 +79,46 @@ resource share 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-05-01
   properties: { shareQuota: 5 }
 }
 
+// ---- private network: the app reaches Postgres privately; the database has no public endpoint ----
+resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
+  name: '${name}-vnet'
+  location: location
+  properties: {
+    addressSpace: { addressPrefixes: [ '10.40.0.0/16' ] }
+    subnets: [
+      {
+        name: 'apps'   // Container Apps environment (workload profiles: /27 minimum)
+        properties: {
+          addressPrefix: '10.40.0.0/23'
+          delegations: [ { name: 'apps', properties: { serviceName: 'Microsoft.App/environments' } } ]
+        }
+      }
+      {
+        name: 'postgres'
+        properties: {
+          addressPrefix: '10.40.2.0/28'
+          delegations: [ { name: 'pg', properties: { serviceName: 'Microsoft.DBforPostgreSQL/flexibleServers' } } ]
+        }
+      }
+    ]
+  }
+}
+
+resource pgDns 'Microsoft.Network/privateDnsZones@2024-06-01' = {
+  name: '${name}.private.postgres.database.azure.com'
+  location: 'global'
+}
+
+resource pgDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
+  parent: pgDns
+  name: 'vnet'
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: { id: vnet.id }
+  }
+}
+
 // ---- PostgreSQL ----
 resource pg 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
   name: pgServerName
@@ -97,8 +137,13 @@ resource pg 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
       geoRedundantBackup: 'Disabled'
     }
     highAvailability: { mode: 'Disabled' }
-    network: { publicNetworkAccess: 'Enabled' }
+    network: {
+      publicNetworkAccess: 'Disabled'
+      delegatedSubnetResourceId: '${vnet.id}/subnets/postgres'
+      privateDnsZoneArmResourceId: pgDns.id
+    }
   }
+  dependsOn: [ pgDnsLink ]
 }
 
 resource pgDb 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2024-08-01' = {
@@ -106,22 +151,16 @@ resource pgDb 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2024-08-01' =
   name: 'planeweb'
 }
 
-// 0.0.0.0 = "allow Azure services": Container Apps without a custom VNet has no fixed outbound IP.
-// TLS is enforced by the server; the password is the access control.
-resource pgAllowAzure 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2024-08-01' = {
-  parent: pg
-  name: 'AllowAzureServices'
-  properties: {
-    startIpAddress: '0.0.0.0'
-    endIpAddress: '0.0.0.0'
-  }
-}
-
 // ---- Container Apps ----
 resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: '${name}-env'
   location: location
   properties: {
+    vnetConfiguration: {
+      infrastructureSubnetId: '${vnet.id}/subnets/apps'
+      internal: false // the app itself stays publicly reachable over HTTPS
+    }
+    workloadProfiles: [ { name: 'Consumption', workloadProfileType: 'Consumption' } ]
     appLogsConfiguration: {
       destination: 'log-analytics'
       logAnalyticsConfiguration: {
@@ -177,9 +216,9 @@ var entraEnv = !hasEntra ? [] : concat([
 resource app 'Microsoft.App/containerApps@2024-03-01' = {
   name: name
   location: location
-  dependsOn: [ pgAllowAzure ]
   properties: {
     managedEnvironmentId: env.id
+    workloadProfileName: 'Consumption'
     configuration: {
       activeRevisionsMode: 'Single'
       ingress: {

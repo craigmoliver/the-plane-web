@@ -59,6 +59,37 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Write parameters file
+        # Values go through JSON (not a command line) so passwords with spaces or quotes survive verbatim.
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          ADMIN_EMAIL: ${{ vars.ADMIN_EMAIL }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          ENTRA_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
+          ENTRA_CLIENT_ID: ${{ vars.ENTRA_CLIENT_ID }}
+          ENTRA_CLIENT_SECRET: ${{ secrets.ENTRA_CLIENT_SECRET }}
+          ENTRA_ADMIN_OBJECT_IDS: ${{ vars.ENTRA_ADMIN_OBJECT_IDS }}
+        run: |
+          umask 077
+          jq -n '{
+            "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+            contentVersion: "1.0.0.0",
+            parameters: {
+              image:              { value: env.IMAGE },
+              registryUsername:   { value: env.GHCR_USERNAME },
+              registryPassword:   { value: env.GHCR_TOKEN },
+              postgresPassword:   { value: env.POSTGRES_PASSWORD },
+              adminEmail:         { value: env.ADMIN_EMAIL },
+              adminPassword:      { value: env.ADMIN_PASSWORD },
+              entraTenantId:      { value: env.ENTRA_TENANT_ID },
+              entraClientId:      { value: env.ENTRA_CLIENT_ID },
+              entraClientSecret:  { value: env.ENTRA_CLIENT_SECRET },
+              entraAdminObjectIds:{ value: (env.ENTRA_ADMIN_OBJECT_IDS | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))) }
+            }
+          }' > "$RUNNER_TEMP/params.json"
       - id: deploy
         uses: azure/arm-deploy@v2
         with:
@@ -67,20 +98,12 @@ jobs:
           template: infra/main.bicep
           deploymentName: planeweb-${{ github.run_number }}
           failOnStdErr: false
-          parameters: >-
-            image=${{ needs.build.outputs.image }}
-            registryUsername=${{ secrets.GHCR_USERNAME }}
-            registryPassword=${{ secrets.GHCR_TOKEN }}
-            postgresPassword=${{ secrets.POSTGRES_PASSWORD }}
-            adminEmail=${{ vars.ADMIN_EMAIL }}
-            adminPassword=${{ secrets.ADMIN_PASSWORD }}
-            entraTenantId=${{ vars.ENTRA_TENANT_ID }}
-            entraClientId=${{ vars.ENTRA_CLIENT_ID }}
-            entraClientSecret=${{ secrets.ENTRA_CLIENT_SECRET }}
+          parameters: ${{ runner.temp }}/params.json
       - name: Smoke test
         run: |
           url="${{ steps.deploy.outputs.url }}"
           for i in $(seq 1 40); do curl -fs "$url/healthz" && break; sleep 10; done
           curl -fs "$url/healthz"
           test "$(curl -s -o /dev/null -w '%{http_code}' "$url/settings")" = 302
+          rm -f "$RUNNER_TEMP/params.json"
           echo "Deployed: $url  (Entra redirect URI: ${{ steps.deploy.outputs.entraRedirectUri }})"
