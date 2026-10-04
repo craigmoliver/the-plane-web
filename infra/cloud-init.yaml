@@ -1,0 +1,24 @@
+#cloud-config
+# First-boot setup for the Plane Web VM: Docker, and an empty app directory for deploys to fill in.
+package_update: true
+packages:
+  - ca-certificates
+  - curl
+
+runcmd:
+  - install -d -m 0755 /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - >
+    echo "deb [arch=$(dpkg --print-architecture)
+    signed-by=/etc/apt/keyrings/docker.asc]
+    https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable"
+    > /etc/apt/sources.list.d/docker.list
+  - apt-get update -y
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+  - systemctl enable --now docker
+  - install -d -m 0750 -o adminuser -g adminuser /opt/planeweb
+  - install -d -m 0755 /etc/apt/apt.conf.d
+  - echo 'Unattended-Upgrade::Allowed-Origins { "${distro_id}:${distro_codename}-security"; };' > /etc/apt/apt.conf.d/51unattended-upgrades-security-only
+  - apt-get install -y unattended-upgrades
+  - systemctl enable --now unattended-upgrades

@@ -1,0 +1,34 @@
+# Deployed to the Azure VM by .github/workflows/deploy.yml (via Run Command).
+# Pulls the published image instead of building, and always runs behind Caddy for HTTPS.
+# Equivalent to: docker-compose.yml + docker-compose.https.yml, with build: replaced by a pulled image.
+services:
+  planeweb:
+    image: ${PLANEWEB_IMAGE:?set PLANEWEB_IMAGE}
+    container_name: planeweb
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - PlaneWeb__Provider=adsb.lol
+      - PlaneWeb__PollSeconds=5
+      - PlaneWeb__TrustForwardedHeaders=true
+      - TZ=America/New_York
+    volumes:
+      - planeweb-data:/data
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: planeweb-caddy
+    restart: unless-stopped
+    depends_on: [planeweb]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - PLANEWEB_HOST=${PLANEWEB_HOST:?set PLANEWEB_HOST in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+
+volumes:
+  planeweb-data:
+  caddy-data:

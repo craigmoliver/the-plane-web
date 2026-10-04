@@ -1,5 +1,7 @@
-// The Plane Web on Azure: Container Apps + PostgreSQL Flexible Server + Azure Files for /data.
-// Deployed by .github/workflows/deploy.yml into an existing resource group.
+// The Plane Web on Azure: a single small VM running the existing Docker Compose setup
+// (SQLite + Caddy for HTTPS), deployed into an existing resource group.
+// No SSH is reachable (NSG allows only 80/443); deploys and maintenance use Azure Run Command,
+// which works over the control plane via the VM agent and needs no open port.
 targetScope = 'resourceGroup'
 
 @description('Short name used to derive resource names (lowercase letters/digits).')
@@ -9,289 +11,166 @@ param name string = 'planeweb'
 
 param location string = resourceGroup().location
 
-@description('Container image, e.g. ghcr.io/owner/the-plane-web:<sha>.')
-param image string
+@allowed(['Standard_B1s', 'Standard_B1ms', 'Standard_B2s'])
+param vmSize string = 'Standard_B1ms'
 
-@description('Registry credentials; leave empty if the image is public.')
-param registryServer string = 'ghcr.io'
-param registryUsername string = ''
+param osDiskGb int = 30
+
+@description('Admin username for the VM. No password/SSH access is exposed (NSG blocks port 22); a one-time ephemeral key is supplied only to satisfy the Linux VM creation API.')
+param adminUsername string = 'adminuser'
+
 @secure()
-param registryPassword string = ''
+@description('Ephemeral SSH public key, generated fresh per deploy and never saved (see deploy.yml). Unusable in practice: port 22 is not open.')
+param adminSshPublicKey string
 
-@description('PostgreSQL administrator password.')
-@secure()
-param postgresPassword string
+@description('Globally unique DNS label for the public IP, e.g. planeweb-ab12cd. Produces <label>.<region>.cloudapp.azure.com.')
+param dnsLabel string = toLower('${name}-${uniqueString(resourceGroup().id)}')
 
-@description('Bootstrap admin (local account). Optional when work-account admins are configured.')
-param adminEmail string = ''
-@secure()
-param adminPassword string = ''
+param backupRetentionDays int = 7
 
-@description('Microsoft Entra sign-in. Leave tenant/client empty to disable.')
-param entraTenantId string = ''
-param entraClientId string = ''
-@secure()
-param entraClientSecret string = ''
-@description('Entra object IDs made admin on sign-in.')
-param entraAdminObjectIds array = []
-
-@description('Allow local email/password accounts alongside work accounts.')
-param localLogin bool = true
-
-param timeZone string = 'America/New_York'
-
-var suffix = uniqueString(resourceGroup().id)
-var pgServerName = '${name}-pg-${suffix}'
-var storageName = take('${name}st${suffix}', 24)
-var hasRegistryAuth = !empty(registryUsername)
-var appsSubnetPrefix = '10.40.0.0/23'
-var hasEntra = !empty(entraTenantId) && !empty(entraClientId)
-
-resource logs 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
-  name: '${name}-logs'
-  location: location
-  properties: {
-    sku: { name: 'PerGB2018' }
-    retentionInDays: 30
-  }
-}
-
-// ---- storage for /data (trails, logo cache, data-protection keys; NOT the database) ----
-resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
-  name: storageName
-  location: location
-  sku: { name: 'Standard_LRS' }
-  kind: 'StorageV2'
-  properties: {
-    minimumTlsVersion: 'TLS1_2'
-    allowBlobPublicAccess: false
-    supportsHttpsTrafficOnly: true
-  }
-}
-
-resource fileService 'Microsoft.Storage/storageAccounts/fileServices@2023-05-01' = {
-  parent: storage
-  name: 'default'
-}
-
-resource share 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-05-01' = {
-  parent: fileService
-  name: 'data'
-  properties: { shareQuota: 5 }
-}
-
-// ---- private network: the app reaches Postgres privately; the database has no public endpoint ----
 resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
   name: '${name}-vnet'
   location: location
   properties: {
-    addressSpace: { addressPrefixes: [ '10.40.0.0/16' ] }
+    addressSpace: { addressPrefixes: ['10.50.0.0/24'] }
     subnets: [
       {
-        name: 'apps'   // Container Apps environment (workload profiles: /27 minimum)
-        properties: {
-          addressPrefix: appsSubnetPrefix
-          delegations: [ { name: 'apps', properties: { serviceName: 'Microsoft.App/environments' } } ]
-        }
+        name: 'vm'
+        properties: { addressPrefix: '10.50.0.0/27' }
       }
+    ]
+  }
+}
+
+// Only 80/443 inbound; everything else (including 22) falls through to the default deny rule.
+resource nsg 'Microsoft.Network/networkSecurityGroups@2024-01-01' = {
+  name: '${name}-nsg'
+  location: location
+  properties: {
+    securityRules: [
       {
-        name: 'postgres'
+        name: 'AllowHttpHttps'
         properties: {
-          addressPrefix: '10.40.2.0/28'
-          delegations: [ { name: 'pg', properties: { serviceName: 'Microsoft.DBforPostgreSQL/flexibleServers' } } ]
+          priority: 100
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: 'Tcp'
+          sourceAddressPrefix: '*'
+          sourcePortRange: '*'
+          destinationAddressPrefix: '*'
+          destinationPortRanges: ['80', '443']
         }
       }
     ]
   }
 }
 
-resource pgDns 'Microsoft.Network/privateDnsZones@2024-06-01' = {
-  name: '${name}.private.postgres.database.azure.com'
-  location: 'global'
-}
-
-resource pgDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
-  parent: pgDns
-  name: 'vnet'
-  location: 'global'
-  properties: {
-    registrationEnabled: false
-    virtualNetwork: { id: vnet.id }
-  }
-}
-
-// ---- PostgreSQL ----
-resource pg 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
-  name: pgServerName
+resource pip 'Microsoft.Network/publicIPAddresses@2024-01-01' = {
+  name: '${name}-ip'
   location: location
-  sku: {
-    name: 'Standard_B1ms'
-    tier: 'Burstable'
-  }
+  sku: { name: 'Standard' }
   properties: {
-    version: '16'
-    administratorLogin: 'planeweb'
-    administratorLoginPassword: postgresPassword
-    storage: { storageSizeGB: 32 }
-    backup: {
-      backupRetentionDays: 7
-      geoRedundantBackup: 'Disabled'
-    }
-    highAvailability: { mode: 'Disabled' }
-    network: {
-      publicNetworkAccess: 'Disabled'
-      delegatedSubnetResourceId: '${vnet.id}/subnets/postgres'
-      privateDnsZoneArmResourceId: pgDns.id
-    }
+    publicIPAllocationMethod: 'Static'
+    dnsSettings: { domainNameLabel: dnsLabel }
   }
-  dependsOn: [ pgDnsLink ]
 }
 
-resource pgDb 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2024-08-01' = {
-  parent: pg
-  name: 'planeweb'
-}
-
-// ---- Container Apps ----
-resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
-  name: '${name}-env'
+resource nic 'Microsoft.Network/networkInterfaces@2024-01-01' = {
+  name: '${name}-nic'
   location: location
   properties: {
-    vnetConfiguration: {
-      infrastructureSubnetId: '${vnet.id}/subnets/apps'
-      internal: false // the app itself stays publicly reachable over HTTPS
-    }
-    workloadProfiles: [ { name: 'Consumption', workloadProfileType: 'Consumption' } ]
-    appLogsConfiguration: {
-      destination: 'log-analytics'
-      logAnalyticsConfiguration: {
-        customerId: logs.properties.customerId
-        sharedKey: logs.listKeys().primarySharedKey
-      }
-    }
-  }
-}
-
-resource envStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' = {
-  parent: env
-  name: 'data'
-  properties: {
-    azureFile: {
-      accountName: storage.name
-      accountKey: storage.listKeys().keys[0].value
-      shareName: share.name
-      accessMode: 'ReadWrite'
-    }
-  }
-}
-
-var baseSecrets = [
-  { name: 'pg-password', value: postgresPassword }
-]
-var adminSecrets = empty(adminPassword) ? [] : [ { name: 'admin-password', value: adminPassword } ]
-var entraSecrets = hasEntra && !empty(entraClientSecret) ? [ { name: 'entra-secret', value: entraClientSecret } ] : []
-var registrySecrets = hasRegistryAuth ? [ { name: 'registry-password', value: registryPassword } ] : []
-
-var baseEnv = [
-  { name: 'TZ', value: timeZone }
-  { name: 'PlaneWeb__Database', value: 'Postgres' }
-  { name: 'PlaneWeb__Postgres__Host', value: pg.properties.fullyQualifiedDomainName }
-  { name: 'PlaneWeb__Postgres__Database', value: pgDb.name }
-  { name: 'PlaneWeb__Postgres__Username', value: 'planeweb' }
-  { name: 'PlaneWeb__Postgres__Password', secretRef: 'pg-password' }
-  { name: 'PlaneWeb__TrustForwardedHeaders', value: 'true' }
-  // Only the Container Apps ingress (inside the apps subnet) may send X-Forwarded-* headers.
-  // ...plus Azure's internal ingress overlay range (100.64.0.0/10), which workload-profile apps can see it from.
-  { name: 'PlaneWeb__TrustedProxyNetworks', value: '${appsSubnetPrefix},100.64.0.0/10' }
-  { name: 'PlaneWeb__Auth__LocalLogin', value: string(localLogin) }
-]
-var adminEnv = empty(adminEmail) || empty(adminPassword) ? [] : [
-  { name: 'PlaneWeb__Auth__AdminEmail', value: adminEmail }
-  { name: 'PlaneWeb__Auth__AdminPassword', secretRef: 'admin-password' }
-]
-var entraAdminEnv = [for (id, i) in entraAdminObjectIds: { name: 'PlaneWeb__Auth__Entra__AdminObjectIds__${i}', value: id }]
-var entraEnv = !hasEntra ? [] : concat([
-  { name: 'PlaneWeb__Auth__Entra__TenantId', value: entraTenantId }
-  { name: 'PlaneWeb__Auth__Entra__ClientId', value: entraClientId }
-], empty(entraClientSecret) ? [] : [
-  { name: 'PlaneWeb__Auth__Entra__ClientSecret', secretRef: 'entra-secret' }
-], entraAdminEnv)
-
-resource app 'Microsoft.App/containerApps@2024-03-01' = {
-  name: name
-  location: location
-  properties: {
-    managedEnvironmentId: env.id
-    workloadProfileName: 'Consumption'
-    configuration: {
-      activeRevisionsMode: 'Single'
-      ingress: {
-        external: true
-        targetPort: 8080
-        transport: 'auto'
-        allowInsecure: false
-        // Blazor Server keeps a circuit per browser; one replica, so no affinity needed today.
-      }
-      secrets: concat(baseSecrets, adminSecrets, entraSecrets, registrySecrets)
-      registries: hasRegistryAuth ? [
-        {
-          server: registryServer
-          username: registryUsername
-          passwordSecretRef: 'registry-password'
+    ipConfigurations: [
+      {
+        name: 'ipconfig1'
+        properties: {
+          privateIPAllocationMethod: 'Dynamic'
+          subnet: { id: '${vnet.id}/subnets/vm' }
+          publicIPAddress: { id: pip.id }
         }
-      ] : []
-    }
-    template: {
-      containers: [
-        {
-          name: 'planeweb'
-          image: image
-          resources: {
-            cpu: json('0.5')
-            memory: '1Gi'
-          }
-          env: concat(baseEnv, adminEnv, entraEnv)
-          volumeMounts: [
-            { volumeName: 'data', mountPath: '/data' }
-          ]
-          probes: [
-            {
-              type: 'Liveness'
-              httpGet: { path: '/healthz', port: 8080 }
-              initialDelaySeconds: 15
-              periodSeconds: 30
-            }
-            {
-              type: 'Startup'
-              httpGet: { path: '/healthz', port: 8080 }
-              periodSeconds: 5
-              failureThreshold: 30 // up to 2.5 min for first-run migrations
-            }
+      }
+    ]
+    networkSecurityGroup: { id: nsg.id }
+  }
+}
+
+resource vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
+  name: '${name}-vm'
+  location: location
+  identity: { type: 'SystemAssigned' } // lets Run Command execute without any stored credential
+  properties: {
+    hardwareProfile: { vmSize: vmSize }
+    osProfile: {
+      computerName: '${name}-vm'
+      adminUsername: adminUsername
+      customData: base64(loadTextContent('cloud-init.yaml'))
+      linuxConfiguration: {
+        // Required by the VM creation API; irrelevant in practice because the NSG above has no rule for port 22.
+        disablePasswordAuthentication: true
+        ssh: {
+          publicKeys: [
+            { path: '/home/${adminUsername}/.ssh/authorized_keys', keyData: adminSshPublicKey }
           ]
         }
-      ]
-      // Exactly one always-on replica: the app polls flight data in the background and
-      // keeps in-memory state (pollers, trails), so it must neither scale to zero nor out.
-      // During a rollout the old and new revision overlap for a few seconds. That's safe: trails are
-      // written atomically with per-process temp files, the database is shared, and duplicate polling
-      // for a moment is harmless; at worst the old replica's final save drops a few seconds of trail.
-      scale: {
-        minReplicas: 1
-        maxReplicas: 1
       }
-      volumes: [
-        {
-          name: 'data'
-          storageType: 'AzureFile'
-          storageName: envStorage.name
-          // The image runs as the non-root "app" user (uid 1654).
-          mountOptions: 'uid=1654,gid=1654,dir_mode=0750,file_mode=0640,mfsymlinks,nobrl'
-        }
-      ]
+    }
+    storageProfile: {
+      imageReference: {
+        publisher: 'Canonical'
+        offer: 'ubuntu-24_04-lts'
+        sku: 'server'
+        version: 'latest'
+      }
+      osDisk: {
+        createOption: 'FromImage'
+        diskSizeGB: osDiskGb
+        managedDisk: { storageAccountType: 'StandardSSD_LRS' }
+      }
+    }
+    networkProfile: {
+      networkInterfaces: [{ id: nic.id }]
     }
   }
 }
 
-output url string = 'https://${app.properties.configuration.ingress.fqdn}'
-output entraRedirectUri string = 'https://${app.properties.configuration.ingress.fqdn}/signin-oidc'
-output postgresHost string = pg.properties.fullyQualifiedDomainName
+// ---- daily backup, kept 7 days by default ----
+resource vault 'Microsoft.RecoveryServices/vaults@2024-04-01' = {
+  name: '${name}-vault'
+  location: location
+  sku: { name: 'Standard', tier: 'Standard' }
+  properties: {}
+}
+
+resource backupPolicy 'Microsoft.RecoveryServices/vaults/backupPolicies@2024-04-01' = {
+  parent: vault
+  name: 'daily-${backupRetentionDays}d'
+  properties: {
+    backupManagementType: 'AzureIaasVM'
+    schedulePolicy: {
+      schedulePolicyType: 'SimpleSchedulePolicy'
+      scheduleRunFrequency: 'Daily'
+      scheduleRunTimes: ['2026-01-01T06:00:00Z'] // time of day only; date is ignored
+    }
+    retentionPolicy: {
+      retentionPolicyType: 'LongTermRetentionPolicy'
+      dailySchedule: {
+        retentionTimes: ['2026-01-01T06:00:00Z']
+        retentionDuration: { count: backupRetentionDays, durationType: 'Days' }
+      }
+    }
+    timeZone: 'UTC'
+  }
+}
+
+resource protectedItem 'Microsoft.RecoveryServices/vaults/backupFabrics/backupProtectionContainers/protectedItems@2024-04-01' = {
+  name: '${vault.name}/Azure/iaasvmcontainer;iaasvmcontainerv2;${resourceGroup().name};${vm.name}/vm;iaasvmcontainerv2;${resourceGroup().name};${vm.name}'
+  properties: {
+    protectedItemType: 'Microsoft.Compute/virtualMachines'
+    policyId: backupPolicy.id
+    sourceResourceId: vm.id
+  }
+}
+
+output url string = 'https://${pip.properties.dnsSettings.fqdn}'
+output host string = pip.properties.dnsSettings.fqdn
+output entraRedirectUri string = 'https://${pip.properties.dnsSettings.fqdn}/signin-oidc'
+output vmName string = vm.name
