@@ -201,7 +201,8 @@ var baseEnv = [
   { name: 'PlaneWeb__Postgres__Password', secretRef: 'pg-password' }
   { name: 'PlaneWeb__TrustForwardedHeaders', value: 'true' }
   // Only the Container Apps ingress (inside the apps subnet) may send X-Forwarded-* headers.
-  { name: 'PlaneWeb__TrustedProxyNetworks', value: appsSubnetPrefix }
+  // ...plus Azure's internal ingress overlay range (100.64.0.0/10), which workload-profile apps can see it from.
+  { name: 'PlaneWeb__TrustedProxyNetworks', value: '${appsSubnetPrefix},100.64.0.0/10' }
   { name: 'PlaneWeb__Auth__LocalLogin', value: string(localLogin) }
 ]
 var adminEnv = empty(adminEmail) || empty(adminPassword) ? [] : [
