@@ -383,4 +383,33 @@ public class PollerRegistryTests
         Assert.Equal([34.0], trail.Points.Select(p => p.Lat));
         Assert.Equal(t0.AddSeconds(10).ToUnixTimeSeconds(), trail.LastSeen, 3);
     }
+
+    private sealed class SucceedsOnceThenFails : IFlightDataProvider
+    {
+        private int _n;
+        public string Name => "once";
+        public Task<ProviderResult> GetAircraftNearAsync(GeoPoint c, double r, CancellationToken ct) =>
+            Interlocked.Increment(ref _n) == 1
+                ? Task.FromResult(new ProviderResult([new Aircraft { Hex = "ok1", Lat = c.Lat, Lon = c.Lon, AltitudeFt = 5000 }], Name))
+                : throw new HttpRequestException("down");
+        public Task<ProviderResult> GetByCallsignAsync(string cs, CancellationToken ct) => Task.FromResult(new ProviderResult([], Name));
+    }
+
+    [Fact]
+    public async Task FailureAfterSuccess_KeepsLastGoodTimestampAndAircraft()
+    {
+        using var db = new TestDb();
+        var (reg, _, _) = Build(db, new SucceedsOnceThenFails()); // poll 1 succeeds, every later poll fails
+        using var lease = reg.Acquire(new WallSettings { CenterLat = 34, CenterLon = -84 });
+        await WaitFor(() => lease.Store.Current.UpdatedAt != DateTimeOffset.MinValue);
+        var good = lease.Store.Current;
+        Assert.Null(good.Error);
+
+        // The next poll (2 s minimum interval) fails.
+        for (var i = 0; i < 100 && lease.Store.Current.Error is null; i++) await Task.Delay(50);
+        var after = lease.Store.Current;
+        Assert.NotNull(after.Error);
+        Assert.Equal(good.UpdatedAt, after.UpdatedAt);
+        Assert.Equal(["ok1"], after.MapAircraft.Select(a => a.Hex));
+    }
 }
