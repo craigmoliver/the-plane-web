@@ -89,9 +89,10 @@
 
         var present = new List<string>();
         var trails = new List<object>();
-        foreach (var t in Trails.Snapshot())
+        foreach (var hex in mine.Keys)
         {
-            if (!mine.ContainsKey(t.Hex) || !Include(t.Hex) || t.Points.Count == 0) continue;
+            // Get copies one trail; Snapshot() would copy every area's trails.
+            if (!Include(hex) || Trails.Get(hex) is not { Points.Count: > 0 } t) continue;
             present.Add(t.Hex);
             var full = !sent.TryGetValue(t.Hex, out var prev) || prev.Rev != t.Revision;
             var pts = full ? t.Points : t.Points.Where(p => p.T > prev.LastT).ToList();

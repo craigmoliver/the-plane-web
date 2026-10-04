@@ -56,7 +56,7 @@
                 {
                     var self = u.Id == myId;
                     <tr @key="u.Id" class="@(u.Disabled ? "disabled" : "")">
-                        <td><b>@(u.Name ?? u.UserName)</b><br /><small class="dim">@u.UserName</small></td>
+                        <td><b>@(u.Name ?? u.Email ?? u.UserName)</b><br /><small class="dim">@(u.Email ?? u.UserName)</small></td>
                         <td>@(u.External ? "Work account" : "Local")</td>
                         <td>@(u.Admin ? "Admin" : "User")</td>
                         <td>@(u.LastSignIn?.ToLocalTime().ToString("g") ?? "never")</td>
@@ -84,7 +84,7 @@
 
 @code {
     [CascadingParameter] private Task<AuthenticationState> AuthState { get; set; } = default!;
-    private sealed record Row(string Id, string UserName, string? Name, bool External, bool Admin, bool Disabled, bool MustChange, DateTimeOffset? LastSignIn);
+    private sealed record Row(string Id, string UserName, string? Email, string? Name, bool External, bool Admin, bool Disabled, bool MustChange, DateTimeOffset? LastSignIn);
     private List<Row> rows = [];
     private string? myId, notice, error, tempPassword, tempFor, newEmail, newName;
     private bool newAdmin;
@@ -108,7 +108,7 @@
         var now = DateTimeOffset.UtcNow;
         return (await um.Users.AsNoTracking().ToListAsync())
             .OrderBy(u => u.DisplayName ?? u.UserName)
-            .Select(u => new Row(u.Id, u.UserName!, u.DisplayName, u.IsExternal, admins.Contains(u.Id),
+            .Select(u => new Row(u.Id, u.UserName!, u.Email, u.DisplayName, u.IsExternal, admins.Contains(u.Id),
                 u.LockoutEnd is { } end && end > now, u.MustChangePassword, u.LastSignInAt))
             .ToList();
     });

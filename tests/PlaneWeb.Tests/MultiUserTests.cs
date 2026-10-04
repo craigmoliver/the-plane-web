@@ -129,11 +129,13 @@ public class PollerRegistryTests
         public override DateTimeOffset GetUtcNow() => Now;
     }
 
-    private static (PollerRegistry Reg, ManualTime Time, TraceBackfillService Backfill) Build(TestDb db, IFlightDataProvider provider)
+    private static (PollerRegistry Reg, ManualTime Time, TraceBackfillService Backfill) Build(TestDb db, IFlightDataProvider provider) =>
+        Build(db, provider, new TrailStore());
+
+    private static (PollerRegistry Reg, ManualTime Time, TraceBackfillService Backfill) Build(TestDb db, IFlightDataProvider provider, TrailStore trails)
     {
         var time = new ManualTime(DateTimeOffset.UtcNow);
         var opt = Options.Create(new PlaneWebOptions { PollSeconds = 60 });
-        var trails = new TrailStore();
         var backfill = new TraceBackfillService(new AdsbLolTraceClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }),
             trails, opt, time, NullLogger<TraceBackfillService>.Instance);
         var poller = new FlightPollingService(provider, new NoRoutes(), trails, backfill, time);
@@ -205,5 +207,18 @@ public class PollerRegistryTests
         time.Now += PollerRegistry.Linger + TimeSpan.FromSeconds(1);
         reg.Sweep();
         Assert.False(backfill.Enabled);
+    }
+
+    [Fact]
+    public async Task SavedLongerTrailSetting_KeepsWindowWhileOwnerIsAway()
+    {
+        using var db = new TestDb();
+        var alice = await db.AddUserAsync("alice");
+        await new SettingsService(db).SaveAsync(alice, new WallSettings { TrailMinutes = 60 });
+        var trails = new TrailStore();
+        var (reg, _, _) = Build(db, new Counting(), trails);
+        await reg.StartAsync(default);
+        await WaitFor(() => trails.Window == TimeSpan.FromMinutes(60)); // default area is 15 min, alice saved 60
+        await reg.StopAsync(default);
     }
 }

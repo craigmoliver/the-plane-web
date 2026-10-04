@@ -49,10 +49,12 @@ public abstract class UserFeedComponent : ComponentBase, IAsyncDisposable
         Snapshot = _lease.Store.Current;
     }
 
-    private void OnSnapshotEvent(WallSnapshot next) => _ = InvokeAsync(async () =>
+    private void OnSnapshotEvent(WallSnapshot ignored) => _ = InvokeAsync(async () =>
     {
-        if (_disposed) return;
-        Snapshot = next;
+        // Read the current lease rather than the captured snapshot: a callback queued by the previous
+        // area's poller must not overwrite the new area's data.
+        if (_disposed || _lease is null) return;
+        Snapshot = _lease.Store.Current;
         await OnSnapshotAsync();
         StateHasChanged();
     });

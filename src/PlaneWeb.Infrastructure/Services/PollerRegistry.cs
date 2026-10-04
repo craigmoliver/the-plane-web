@@ -38,6 +38,7 @@ public sealed class PollerRegistry(
         public required WallSettings Settings;
         public readonly FlightStateStore Store = new();
         public readonly CancellationTokenSource Cts = new();
+        public Task Worker = Task.CompletedTask;
         public int Leases;
         public bool Pinned;
         public DateTimeOffset LastReleased;
@@ -47,6 +48,9 @@ public sealed class PollerRegistry(
     private readonly Lock _lock = new();
     private CancellationToken _stopping = CancellationToken.None;
     private string? _pinnedKey;
+    // Longest trail window in any saved settings, so restored history isn't trimmed before its owner reconnects.
+    private int _savedMaxTrailMinutes;
+    private readonly ConcurrentDictionary<Task, byte> _workers = new();
 
     public int ActiveCount => _pollers.Count;
 
@@ -83,7 +87,10 @@ public sealed class PollerRegistry(
         var p = new Poller { Key = key, Settings = SettingsService.Clone(s), LastReleased = time.GetUtcNow() };
         _pollers[key] = p;
         ApplySharedSettings();
-        _ = Task.Run(() => RunAsync(p));
+        p.Worker = Task.Run(() => RunAsync(p));
+        _workers[p.Worker] = 0;
+        // Dispose the token source only after the worker has exited.
+        p.Worker.ContinueWith(t => { _workers.TryRemove(t, out _); p.Cts.Dispose(); }, TaskScheduler.Default);
         return p;
     }
 
@@ -92,8 +99,8 @@ public sealed class PollerRegistry(
     {
         var active = _pollers.Values.Select(p => p.Settings).ToList();
         backfill.Enabled = active.Any(s => s.TraceBackfill);
-        if (active.Count > 0)
-            trails.Window = TimeSpan.FromMinutes(Math.Clamp(active.Max(s => s.TrailMinutes), 1, WallSettings.MaxTrailMinutes));
+        var minutes = Math.Max(_savedMaxTrailMinutes, active.Count == 0 ? 0 : active.Max(s => s.TrailMinutes));
+        if (minutes > 0) trails.Window = TimeSpan.FromMinutes(Math.Clamp(minutes, 1, WallSettings.MaxTrailMinutes));
     }
 
     private async Task RunAsync(Poller p)
@@ -143,8 +150,7 @@ public sealed class PollerRegistry(
             {
                 if (p.Pinned || p.Leases > 0 || now - p.LastReleased < Linger) continue;
                 _pollers.TryRemove(p.Key, out _);
-                p.Cts.Cancel();
-                p.Cts.Dispose();
+                p.Cts.Cancel(); // disposed by the worker's continuation
             }
             ApplySharedSettings();
         }
@@ -153,10 +159,15 @@ public sealed class PollerRegistry(
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _stopping = stoppingToken;
-        void OnChanged(string? userId, WallSettings s) { if (userId is null) Pin(s); }
+        void OnChanged(string? userId, WallSettings s)
+        {
+            if (userId is null) Pin(s);
+            _ = RefreshSavedWindowAsync(stoppingToken);
+        }
         settings.Changed += OnChanged;
         try
         {
+            await RefreshSavedWindowAsync(stoppingToken);
             Pin(await settings.GetAsync(null, stoppingToken));
             using var timer = new PeriodicTimer(TimeSpan.FromSeconds(30), time);
             while (await timer.WaitForNextTickAsync(stoppingToken)) Sweep();
@@ -165,7 +176,30 @@ public sealed class PollerRegistry(
         finally
         {
             settings.Changed -= OnChanged;
-            foreach (var p in _pollers.Values) p.Cts.Cancel();
         }
+    }
+
+    private async Task RefreshSavedWindowAsync(CancellationToken ct)
+    {
+        try
+        {
+            var all = await settings.GetAllAsync(ct);
+            lock (_lock)
+            {
+                _savedMaxTrailMinutes = all.Count == 0 ? 0 : all.Max(s => s.TrailMinutes);
+                ApplySharedSettings();
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException) { log.LogWarning(ex, "Could not read saved trail lengths"); }
+        catch (OperationCanceledException) { }
+    }
+
+    /// <summary>Stops every worker (including ones Sweep already cancelled) and waits for in-flight polls.</summary>
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        await base.StopAsync(cancellationToken);
+        lock (_lock)
+            foreach (var p in _pollers.Values) p.Cts.Cancel();
+        await Task.WhenAll(_workers.Keys).WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
     }
 }

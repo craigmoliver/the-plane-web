@@ -45,6 +45,25 @@ public class EntraProvisioningTests
     }
 
     [Fact]
+    public async Task EmailRenameThenReassignment_GivesTheNewPersonTheirOwnAccount()
+    {
+        using var db = new TestDb();
+        var (sp, accounts, _) = Build(db);
+        await accounts.EnsureRolesAsync();
+        var (first, _) = await accounts.ProvisionExternalAsync(new ExternalIdentity("oid-a", Tenant, "sam@corp.com", "Sam A", []), Opts());
+        // Sam A is renamed; the old address is later given to someone else.
+        var (renamed, _) = await accounts.ProvisionExternalAsync(new ExternalIdentity("oid-a", Tenant, "sam.a@corp.com", "Sam A", []), Opts());
+        var (second, err) = await accounts.ProvisionExternalAsync(new ExternalIdentity("oid-b", Tenant, "sam@corp.com", "Sam B", []), Opts());
+
+        Assert.Equal(first!.Id, renamed!.Id);
+        Assert.Equal("sam.a@corp.com", renamed.Email);
+        Assert.Null(err);
+        Assert.NotEqual(first.Id, second!.Id);
+        Assert.Equal(AccountService.ExternalUserName("oid-b"), second.UserName);
+        sp.Dispose();
+    }
+
+    [Fact]
     public async Task OtherTenant_IsRefused()
     {
         using var db = new TestDb();

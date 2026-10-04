@@ -101,12 +101,13 @@ public sealed class AccountService(UserManager<AppUser> users, RoleManager<Ident
         if (!string.Equals(id.TenantId, o.TenantId, StringComparison.OrdinalIgnoreCase))
             return (null, "That account is not part of this organization.");
 
+        // Work accounts are keyed by their immutable Entra object id; emails can be renamed or reassigned.
+        var userName = ExternalUserName(id.ObjectId);
         var user = await users.FindByLoginAsync(EntraProvider, id.ObjectId);
         if (user is null)
         {
-            var userName = id.Email ?? $"{id.ObjectId}@entra";
-            if (await users.FindByNameAsync(userName) is { } clash && !clash.IsExternal)
-                return (null, $"A local account already uses {userName}. Ask an admin to remove it first.");
+            if (id.Email is not null && await users.FindByNameAsync(id.Email) is { IsExternal: false })
+                return (null, $"A local account already uses {id.Email}. Ask an admin to remove it first.");
             user = new AppUser
             {
                 UserName = userName, Email = id.Email, EmailConfirmed = true, DisplayName = id.Name,
@@ -116,7 +117,14 @@ public sealed class AccountService(UserManager<AppUser> users, RoleManager<Ident
             if (r.Succeeded) r = await users.AddLoginAsync(user, new UserLoginInfo(EntraProvider, id.ObjectId, "Work account"));
             if (r.Succeeded) r = await users.AddToRoleAsync(user, Roles.User);
             if (!r.Succeeded) return (null, string.Join("; ", r.Errors.Select(e => e.Description)));
-            log.LogInformation("Provisioned work account {Email}", userName);
+            log.LogInformation("Provisioned work account {Email}", id.Email ?? userName);
+        }
+        else
+        {
+            // Keep the username stable (older rows used the email) and the email current.
+            if (user.UserName != userName) await users.SetUserNameAsync(user, userName);
+            if (id.Email is not null && user.Email != id.Email) await users.SetEmailAsync(user, id.Email);
+            user.EmailConfirmed = true;
         }
 
         if (await users.IsLockedOutAsync(user)) return (null, "This account has been disabled.");
@@ -128,6 +136,8 @@ public sealed class AccountService(UserManager<AppUser> users, RoleManager<Ident
         await users.UpdateAsync(user);
         return (user, null);
     }
+
+    public static string ExternalUserName(string objectId) => $"entra-{objectId.ToLowerInvariant()}";
 
     public async Task RecordSignInAsync(AppUser u)
     {
