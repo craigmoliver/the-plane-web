@@ -308,3 +308,17 @@ public class AuthTests(AppFactory app) : IClassFixture<AppFactory>
     public void ReturnUrl_IsLocalOnly(string input, string expected) =>
         Assert.Equal(expected, PlaneWeb.Web.AuthSetup.SafeReturnUrl(input));
 }
+
+/// <summary>Own app instance: exhausting the sign-in limit must not affect other tests.</summary>
+public class LoginRateLimitTests(AppFactory app) : IClassFixture<AppFactory>
+{
+    [Fact]
+    public async Task RejectedSignIns_KeepStatus429()
+    {
+        var c = app.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+        HttpResponseMessage? last = null;
+        for (var i = 0; i < 40 && last?.StatusCode != HttpStatusCode.TooManyRequests; i++)
+            last = await AuthTests.LoginAsync(c, "nobody@example.com", "wrong password 1");
+        Assert.Equal(HttpStatusCode.TooManyRequests, last!.StatusCode);
+    }
+}

@@ -62,11 +62,15 @@ public abstract class UserFeedComponent : ComponentBase, IAsyncDisposable
         StateHasChanged();
     });
 
-    private void OnSettingsEvent(string? userId, WallSettings next)
+    private void OnSettingsEvent(string? userId, WallSettings ignored)
     {
         if (userId != UserId) return;
         _ = InvokeAsync(async () =>
         {
+            if (_disposed) return;
+            // Re-read rather than trusting the payload: saves from two tabs can notify out of order,
+            // and the stored settings are the ones that won.
+            var next = await SettingsSvc.GetAsync(UserId);
             if (_disposed) return;
             Settings = next;
             Attach(next);

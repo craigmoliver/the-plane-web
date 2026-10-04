@@ -88,6 +88,12 @@ public static class AuthSetup
         services.AddRateLimiter(o =>
         {
             o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+            o.OnRejected = (ctx, _) =>
+            {
+                // Keep the 429: the friendly error page would re-run this POST as a page request.
+                if (ctx.HttpContext.Features.Get<Microsoft.AspNetCore.Diagnostics.IStatusCodePagesFeature>() is { } f) f.Enabled = false;
+                return ValueTask.CompletedTask;
+            };
             // Per client IP; generous because a company may share one public IP. Account lockout stops guessing.
             o.AddPolicy(LoginRateLimit, ctx => RateLimitPartition.GetFixedWindowLimiter(
                 ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
