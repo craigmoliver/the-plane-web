@@ -14,9 +14,33 @@ The workflow is skipped until the repository variable `AZURE_CLIENT_ID` exists.
   which executes over the control plane via the VM agent, not the network.
 - **Recovery Services vault**: daily VM backup, kept 7 days.
 
-Rough cost: **~$15 VM + ~$3 disk + ~$1–2 backup + a few cents IP ≈ $17–20/month.**
+Rough cost (East US 2, approximate):
+
+| Item | ~$/month |
+|---|---|
+| VM (B1ms) | 15 |
+| OS disk (30 GB Standard SSD) | 3 |
+| Public IPv4 (Standard SKU) | 3.65 |
+| Backup (protected-instance fee, VM < 50 GB) | 5 |
+| Backup storage (daily snapshots, 7-day retention) | 1–2 |
+| **Total** | **≈ $27–30** |
+
+Still well under the earlier Container Apps + PostgreSQL design (~$35–50/month), but not as dramatic a
+saving as a bare VM price alone suggests — the public IP and Backup both carry their own charges.
 
 ## One-time setup (Azure Cloud Shell or a machine with `az`)
+
+### If you deployed the earlier Container Apps + PostgreSQL design
+This VM design uses an incompatible network layout in the same resource-group name (`planeweb-rg`).
+`az group create` does not clear an existing group, so its old Container Apps/PostgreSQL resources
+would keep billing and their VNet subnets can conflict with the new ones. Nothing of value was ever
+stored there if you only reached a partial/failed deploy; if you did reach a working deployment and
+care about its data, back it up first (e.g. `pg_dump` the database). Then:
+```bash
+az group delete -n planeweb-rg --yes   # irreversible; everything in it is deleted
+```
+Recreate it fresh with the commands below.
+
 ```bash
 SUB=<subscription id>; RG=planeweb-rg; LOC=eastus2; REPO=craigmoliver/the-plane-web
 az account set -s $SUB
@@ -38,9 +62,26 @@ az ad app federated-credential create --id $APP --parameters "{
 echo "AZURE_CLIENT_ID=$APP  AZURE_TENANT_ID=$(az account show --query tenantId -o tsv)"
 ```
 
-If app-registration creation is blocked in your directory (common on a company tenant), see
-"Deploying with a company (CapTech) account" below for a managed-identity alternative that needs no
-directory permissions beyond Contributor on the resource group.
+### If creating an app registration for the deploy identity is blocked
+This is about the identity GitHub Actions uses to *deploy infrastructure* in this subscription — a
+separate concern from registering an Entra app for *sign-in* (next section). A company directory
+commonly blocks regular users from creating either kind, but they can be unblocked independently: ask
+IT for the *Application Developer* directory role (fixes both), or use a **user-assigned managed
+identity** instead for deployment, which needs no directory permission at all, only Contributor on
+the resource group:
+```bash
+RG=planeweb-rg; PREFIX=$(gh api repos/$REPO/actions/oidc/customization/sub --jq .sub_claim_prefix)
+az identity create -g $RG -n planeweb-deploy -o none
+az identity federated-credential create -g $RG --identity-name planeweb-deploy -n production \
+  --issuer https://token.actions.githubusercontent.com --subject "$PREFIX:environment:production" \
+  --audiences api://AzureADTokenExchange
+PRINCIPAL=$(az identity show -g $RG -n planeweb-deploy --query principalId -o tsv)
+az role assignment create --assignee-object-id $PRINCIPAL --assignee-principal-type ServicePrincipal \
+  --role Contributor --scope $(az group show -n $RG --query id -o tsv) -o none
+echo "AZURE_CLIENT_ID=$(az identity show -g $RG -n planeweb-deploy --query clientId -o tsv)"
+```
+If even creating the managed identity or the role assignment is blocked, you need Owner (or User
+Access Administrator) on the resource group; have whoever holds that role run the commands above once.
 
 ## GitHub settings (repo → Settings → Secrets and variables → Actions)
 Create an environment named **production**. Under **Deployment branches and tags** choose *Selected branches* → `main`
@@ -79,8 +120,23 @@ or to grant you the *Application Developer* directory role first.
 ## Notes
 - **adsb.lol from Azure:** free feeds may throttle cloud IPs. The app falls back to adsb.fi automatically;
   check with Run Command: `az vm run-command invoke -g $RG -n planeweb-vm --command-id RunShellScript --scripts "docker logs planeweb --tail 100"`.
-- **Custom domain:** point a CNAME at the Azure DNS name, set `PLANEWEB_HOST` accordingly on the VM
-  (`/opt/planeweb/.env`) and redeploy, or add it as a second `site` block in `/opt/planeweb/Caddyfile`.
+- **Custom domain:** edit the repo's `Caddyfile` to add a second site block for your domain, keeping
+  the Azure DNS name's block too (the workflow always sets `PLANEWEB_HOST` to it, and the smoke test
+  checks it, regardless of any custom domain):
+  ```
+  planes.example.com {
+      encode gzip
+      reverse_proxy planeweb:8080
+  }
+  {$PLANEWEB_HOST} {
+      encode gzip
+      reverse_proxy planeweb:8080
+  }
+  ```
+  Point a CNAME at the Azure DNS name, commit, and the next deploy picks it up (Caddy gets a
+  certificate for it automatically too). Editing `/opt/planeweb/Caddyfile` directly on the VM instead
+  does *not* survive the next deploy, which overwrites it from the repo. If using Microsoft sign-in,
+  also add `https://planes.example.com/signin-oidc` as a redirect URI on the Entra app registration.
 - **Admin access:** make sure at least one admin path is set: **both** `ADMIN_EMAIL` and `ADMIN_PASSWORD`
   (one alone does nothing), `ENTRA_ADMIN_OBJECT_IDS`, or the Entra `Admin` app role, or nobody can manage users.
 - **No SSH key to manage:** each deploy generates a throwaway SSH key only to satisfy the Linux VM
