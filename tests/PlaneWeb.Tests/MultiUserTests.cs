@@ -370,4 +370,17 @@ public class PollerRegistryTests
         area.Store.Publish(new WallSnapshot { UpdatedAt = t0.AddSeconds(5), MapAircraft = [new Aircraft { Hex = "b", Callsign = "OLD1", ObservedAt = t0.AddSeconds(5) }] });
         Assert.Equal("NEW1", reg.FindLive("b")!.Callsign);
     }
+
+    [Fact]
+    public void Record_RejectsSampleOlderThanNewestSighting_EvenAfterSkippedRepeats()
+    {
+        var t0 = DateTimeOffset.Parse("2026-10-04T12:00:00Z");
+        var store = new TrailStore();
+        store.Record(new Aircraft { Hex = "a", Lat = 34.0, Lon = -84 }, t0);
+        store.Record(new Aircraft { Hex = "a", Lat = 34.0, Lon = -84 }, t0.AddSeconds(10)); // repeat: skipped, LastSeen=t10
+        store.Record(new Aircraft { Hex = "a", Lat = 33.9, Lon = -84 }, t0.AddSeconds(5));  // late, older sample
+        var trail = store.Get("a")!;
+        Assert.Equal([34.0], trail.Points.Select(p => p.Lat));
+        Assert.Equal(t0.AddSeconds(10).ToUnixTimeSeconds(), trail.LastSeen, 3);
+    }
 }

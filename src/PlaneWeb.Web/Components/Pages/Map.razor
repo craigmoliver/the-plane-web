@@ -77,7 +77,10 @@
         // Membership is stamped with the last successful poll, so repeated snapshots during an outage don't extend it.
         if (snap.UpdatedAt != DateTimeOffset.MinValue)
             foreach (var a in snap.MapAircraft)
-                if (!mine.TryGetValue(a.Hex, out var seen) || seen < snap.UpdatedAt) mine[a.Hex] = snap.UpdatedAt;
+            {
+                var at = a.ObservedAt ?? snap.UpdatedAt; // tracked flights are each fetched at their own time
+                if (!mine.TryGetValue(a.Hex, out var seen) || seen < at) mine[a.Hex] = at;
+            }
         foreach (var gone in mine.Where(kv => nowUtc - kv.Value > TrailStore.StaleAfter).Select(kv => kv.Key).ToList()) mine.Remove(gone);
 
         var aircraft = snap.MapAircraft.Where(a => a.Position.HasValue && Include(a.Hex)).Select(a => new
@@ -85,6 +88,7 @@
             hex = a.Hex, lat = a.Lat, lon = a.Lon, alt = a.OnGround ? 0 : a.AltitudeFt, ground = a.OnGround,
             gs = a.GroundSpeedKt, trk = a.TrackDeg, wall = onWall.Contains(a.Hex),
             ident = Fmt.Ident(a), type = Fmt.Type(a), reg = a.Registration, op = a.Operator,
+            obs = (a.ObservedAt ?? snap.UpdatedAt).ToUnixTimeMilliseconds() / 1000.0,
             callsign = a.Callsign, typeCode = a.TypeCode, squawk = a.Squawk, category = a.Category,
             altText = $"{Fmt.Climb(a.VerticalRateFpm)} {Fmt.Alt(a, s.Units)}".Trim(),
             spdText = Fmt.Speed(a.GroundSpeedKt, s.Units),

@@ -133,6 +133,48 @@ public class AuthTests(AppFactory app) : IClassFixture<AppFactory>
         Assert.True(hub.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Redirect, $"hub: {hub.StatusCode}");
     }
 
+    private static async Task<HttpResponseMessage> PostChangePasswordAsync(HttpClient c, string current, string next, string confirm)
+    {
+        var page = await (await c.GetAsync("/account/change-password")).Content.ReadAsStringAsync();
+        var token = Regex.Match(page, "name=\"__RequestVerificationToken\" value=\"([^\"]+)\"").Groups[1].Value;
+        return await c.PostAsync("/account/change-password", new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["__RequestVerificationToken"] = token, ["_handler"] = "change-password",
+            ["Input.Current"] = current, ["Input.New"] = next, ["Input.Confirm"] = confirm,
+        }));
+    }
+
+    [Fact]
+    public async Task ChangingTemporaryPassword_UnlocksTheAccount()
+    {
+        var email = $"chg{Guid.NewGuid():N}@example.com";
+        await using (var scope = app.Services.CreateAsyncScope())
+            await scope.ServiceProvider.GetRequiredService<PlaneWeb.Infrastructure.Auth.AccountService>()
+                .CreateLocalAsync(email, null, "temporary password 2", admin: false, mustChange: true);
+        var c = Client();
+        await LoginAsync(c, email, "temporary password 2");
+
+        // Failed attempts (mismatch, wrong current) leave the session restricted.
+        var bad = await PostChangePasswordAsync(c, "temporary password 2", "brand new pass 3", "different pass 3");
+        Assert.Contains("don&#x27;t match", await bad.Content.ReadAsStringAsync());
+        await PostChangePasswordAsync(c, "wrong current 9", "brand new pass 3", "brand new pass 3");
+        Assert.Equal("/account/change-password", (await c.GetAsync("/settings")).Headers.Location?.ToString());
+
+        var ok = await PostChangePasswordAsync(c, "temporary password 2", "brand new pass 3", "brand new pass 3");
+        Assert.True(ok.StatusCode == HttpStatusCode.Redirect, $"change returned {ok.StatusCode}");
+        // The refreshed cookie no longer carries the temporary flag.
+        Assert.Equal(HttpStatusCode.OK, (await c.GetAsync("/settings")).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await c.GetAsync("/api/aircraft/not-hex")).StatusCode);
+        await WithUser(email, (um, u) => { Assert.False(u.MustChangePassword); return Task.CompletedTask; });
+
+        // The new password works for a fresh sign-in; the old one doesn't.
+        var fresh = Client();
+        await LoginAsync(fresh, email, "brand new pass 3");
+        Assert.Equal(HttpStatusCode.OK, (await fresh.GetAsync("/settings")).StatusCode);
+        var stale = Client();
+        Assert.Contains("Incorrect email or password", await (await LoginAsync(stale, email, "temporary password 2")).Content.ReadAsStringAsync());
+    }
+
     [Fact]
     public async Task NonAdmin_CannotOpenAdminPage()
     {

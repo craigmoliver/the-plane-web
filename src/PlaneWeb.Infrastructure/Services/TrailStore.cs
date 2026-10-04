@@ -45,7 +45,10 @@ public sealed class TrailStore
         {
             var isNew = !_trails.TryGetValue(a.Hex, out var trail);
             if (trail is null) _trails[a.Hex] = trail = new Trail();
-            trail.LastSeen = Math.Max(trail.LastSeen, t); // an older, late-arriving sample must not rewind freshness
+            // A late-arriving sample older than the newest sighting is stale: it must neither rewind freshness
+            // nor be appended (the last stored point can be older than LastSeen when repeats were skipped).
+            if (!isNew && t < trail.LastSeen) return false;
+            trail.LastSeen = t;
             var pts = trail.Points;
             // Skip repeats: the feed returns the same position until the aircraft reports a new one.
             if (pts.Count == 0 || (pts[^1].T < t && (pts[^1].Lat != point.Lat || pts[^1].Lon != point.Lon)))
