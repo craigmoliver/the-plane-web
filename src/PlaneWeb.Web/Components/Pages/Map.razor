@@ -54,17 +54,29 @@
 
     protected override Task OnSnapshotAsync() => Push();
 
+    private string? pollKey;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await base.OnInitializedAsync();
+        if (Settings is not null) pollKey = PollerRegistry.KeyFor(Settings);
+    }
+
     protected override async Task OnUserSettingsChangedAsync()
     {
-        sent.Clear(); // area or filters may have changed: resend everything
-        mine.Clear();
+        sent.Clear(); // display options may have changed: resend everything
+        // Keep area membership (and so recently departed aircraft's trails) for display-only changes like
+        // title, units or trail length; reset it only when what is polled changes.
+        var key = PollerRegistry.KeyFor(Settings!);
+        if (key != pollKey) mine.Clear();
+        pollKey = key;
         if (mapReady) await SafeJs("planeWebLiveMap.setArea", AreaState(), true);
         await Push();
     }
 
     private async Task Push()
     {
-        if (!mapReady || s is null) return;
+        if (!mapReady || s is null || IsDisposed) return;
 
         // "On the wall" = the nearest page of flights the wall leads with (or the tracked flights).
         var onWall = (snap.Mode == DisplayMode.Area
@@ -137,7 +149,7 @@
 
     public override async ValueTask DisposeAsync()
     {
+        await base.DisposeAsync(); // detach feeds first so nothing pushes to a page being torn down
         if (mapReady) await SafeJs("planeWebLiveMap.dispose");
-        await base.DisposeAsync();
     }
 }
