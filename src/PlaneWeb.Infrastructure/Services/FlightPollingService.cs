@@ -42,10 +42,9 @@ public sealed class FlightPollingService(
         var snap = await PollAsync(s, ct);
         // Positions are stamped with when they were fetched, not when enrichment finished, so a slower poll
         // of an overlapping area can't record older coordinates after newer ones (TrailStore rejects them).
-        var observed = snap.UpdatedAt;
         foreach (var a in snap.MapAircraft)
         {
-            trails.Record(a, observed);
+            trails.Record(a, a.ObservedAt ?? snap.UpdatedAt);
             // Enqueue skips hexes already tried, so this also retries ones a full queue rejected.
             if (s.TraceBackfill) backfill.Enqueue(a.Hex);
         }
@@ -63,7 +62,7 @@ public sealed class FlightPollingService(
                 : (s.Center, s.RadiusNm);
             var raw = await provider.GetAircraftNearAsync(center, radius, ct);
             var observedAt = time.GetUtcNow();
-            var inArea = FlightProcessor.FilterArea(raw.Aircraft, s)
+            var inArea = FlightProcessor.FilterArea(raw.Aircraft.Select(a => a with { ObservedAt = observedAt }), s)
                 .OrderBy(a => Geo.DistanceNm(s.Center, a.Position!.Value))
                 .ToList();
             var filtered = inArea.Take(Math.Max(s.MaxAreaFlights * 3, 20)).ToList();
@@ -90,6 +89,7 @@ public sealed class FlightPollingService(
                 .OrderByDescending(a => a.Position.HasValue)
                 .FirstOrDefault();
             if (found is null) return (View: new TrackedFlightView(req, cs, null), result.Source, At: at);
+            found = found with { ObservedAt = at }; // each callsign is fetched independently
             var route = await routes.GetRouteAsync(cs, ct);
             return (View: new TrackedFlightView(req, cs, FlightProcessor.Enrich(found, route, s.Center, now)), result.Source, At: at);
         }));

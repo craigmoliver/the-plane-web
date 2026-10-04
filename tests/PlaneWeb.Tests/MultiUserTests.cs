@@ -291,7 +291,57 @@ public class PollerRegistryTests
         routes.Release.SetResult();
         await slow;                                                     // completes last with the older position
 
-        var pts = trails.Get("abc")!.Points;
-        Assert.Equal([34.10], pts.Select(p => p.Lat));                 // older sample rejected, no doubling back
+        var trail = trails.Get("abc")!;
+        Assert.Equal([34.10], trail.Points.Select(p => p.Lat));        // older sample rejected, no doubling back
+        Assert.Equal(DateTimeOffset.Parse("2026-10-04T12:00:05Z").ToUnixTimeSeconds(), trail.LastSeen, 3); // freshness not rewound
+        trails.Prune(DateTimeOffset.Parse("2026-10-04T12:05:01Z"));    // 4m56s after the newest sighting
+        Assert.NotNull(trails.Get("abc"));
+    }
+
+    private sealed class DelayedCallsigns(ManualTime time) : IFlightDataProvider
+    {
+        public readonly TaskCompletionSource ReleaseB = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public string Name => "cs";
+        public Task<ProviderResult> GetAircraftNearAsync(GeoPoint c, double r, CancellationToken ct) =>
+            Task.FromResult(new ProviderResult([new Aircraft { Hex = "bbb", Callsign = "BBB2", Lat = 34.05, Lon = -84.5, AltitudeFt = 9000 }], Name));
+        public async Task<ProviderResult> GetByCallsignAsync(string cs, CancellationToken ct)
+        {
+            if (cs == "BBB2") await ReleaseB.Task; // B's lookup returns later than A's
+            var (hex, lat) = cs == "AAA1" ? ("aaa", 34.0) : ("bbb", 34.10);
+            return new ProviderResult([new Aircraft { Hex = hex, Callsign = cs, Lat = lat, Lon = -84.5, AltitudeFt = 9000 }], Name);
+        }
+    }
+
+    [Fact]
+    public async Task TrackedFlights_KeepTheirOwnFetchTimes()
+    {
+        var time = new ManualTime(DateTimeOffset.Parse("2026-10-04T12:00:00Z"));
+        var trails = new TrailStore();
+        var opt = Options.Create(new PlaneWebOptions());
+        var backfill = new TraceBackfillService(new AdsbLolTraceClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }),
+            trails, opt, time, NullLogger<TraceBackfillService>.Instance);
+        var provider = new DelayedCallsigns(time);
+        var poller = new FlightPollingService(provider, new NoRoutes(), trails, backfill, time);
+
+        // A is fetched at t=0; B's lookup is still pending.
+        var flights = poller.PollAndRecordAsync(new WallSettings { Mode = DisplayMode.Flights, TrackedFlights = ["AAA1", "BBB2"], TraceBackfill = false }, default);
+        time.Now += TimeSpan.FromSeconds(5);
+        // An overlapping area poll records B at t=5.
+        await poller.PollAndRecordAsync(new WallSettings { CenterLat = 34.05, CenterLon = -84.5, RadiusNm = 20, TraceBackfill = false }, default);
+        time.Now += TimeSpan.FromSeconds(5);
+        provider.ReleaseB.SetResult();   // B is fetched at t=10 with a newer position
+        await flights;
+
+        Assert.Equal([34.05, 34.10], trails.Get("bbb")!.Points.Select(p => p.Lat)); // not rejected as if fetched at t=0
+    }
+
+    [Fact]
+    public void TrailLength_DoesNotSplitPollers()
+    {
+        using var db = new TestDb();
+        var (reg, _, _) = Build(db, new Counting());
+        using var a = reg.Acquire(new WallSettings { TrailMinutes = 15 });
+        using var b = reg.Acquire(new WallSettings { TrailMinutes = 60 });
+        Assert.Same(a.Store, b.Store);
     }
 }

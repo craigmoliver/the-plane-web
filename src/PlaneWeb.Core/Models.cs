@@ -26,6 +26,8 @@ public sealed record Aircraft
     public double? TrackDeg { get; init; }
     public double? VerticalRateFpm { get; init; }
     public string? Squawk { get; init; }
+    /// <summary>When this position was fetched from the feed (set by the poller).</summary>
+    public DateTimeOffset? ObservedAt { get; init; }
 
     public GeoPoint? Position => Lat is { } la && Lon is { } lo ? new GeoPoint(la, lo) : null;
 

@@ -64,7 +64,9 @@ public sealed class PollerRegistry(
         s.Mode, s.Shape, s.CenterLat, s.CenterLon, s.RadiusNm, s.PolygonJson,
         Tracked = s.Mode == DisplayMode.Flights ? s.TrackedFlights : [],
         s.MinAltitudeFt, s.MaxAltitudeFt, s.IncludeGround, s.IncludeHelicopters, s.IncludeLight,
-        s.MaxAreaFlights, s.TraceBackfill, s.TrailMinutes,
+        s.MaxAreaFlights, s.TraceBackfill,
+        // TrailMinutes is deliberately excluded: retention is store-wide (see ApplySharedSettings),
+        // so viewers wanting different trail lengths still share one poller.
     });
 
     public PollerLease Acquire(WallSettings s)
