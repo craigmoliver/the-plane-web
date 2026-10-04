@@ -162,14 +162,15 @@ public static class AuthSetup
 
         account.MapPost("/logout", async (HttpContext ctx, IAntiforgery af, SignInManager<AppUser> signIn) =>
         {
-            await af.ValidateRequestAsync(ctx);
+            // A stale token (e.g. another tab switched accounts) is a client error, not a 500.
+            if (!await af.IsRequestValidAsync(ctx)) return PlainBadRequest(ctx);
             await signIn.SignOutAsync();
             return Results.LocalRedirect("/account/login");
         }).AllowAnonymous();
 
         account.MapPost("/external", async (HttpContext ctx, IAntiforgery af, IOptions<AuthOptions> opt, string? returnUrl) =>
         {
-            await af.ValidateRequestAsync(ctx);
+            if (!await af.IsRequestValidAsync(ctx)) return PlainBadRequest(ctx);
             if (!opt.Value.Entra.Enabled) return Results.NotFound();
             var props = new AuthenticationProperties
             {
@@ -192,6 +193,13 @@ public static class AuthSetup
             await accounts.RecordSignInAsync(user);
             return Results.LocalRedirect(SafeReturnUrl(returnUrl));
         }).AllowAnonymous().RequireRateLimiting(LoginRateLimit);
+    }
+
+    /// <summary>400 without the friendly error page (which would re-run this POST as a page request).</summary>
+    private static IResult PlainBadRequest(HttpContext ctx)
+    {
+        if (ctx.Features.Get<Microsoft.AspNetCore.Diagnostics.IStatusCodePagesFeature>() is { } f) f.Enabled = false;
+        return Results.BadRequest();
     }
 
     /// <summary>Only same-site relative paths; anything else goes to the home page (prevents open redirects).</summary>
@@ -226,11 +234,17 @@ public sealed class RevalidatingIdentityStateProvider(ILoggerFactory lf, IServic
     protected override async Task<bool> ValidateAuthenticationStateAsync(AuthenticationState state, CancellationToken ct)
     {
         await using var scope = scopes.CreateAsyncScope();
-        var users = scope.ServiceProvider.GetRequiredService<UserManager<AppUser>>();
-        var user = await users.GetUserAsync(state.User);
+        return await IsStillValidAsync(scope.ServiceProvider.GetRequiredService<UserManager<AppUser>>(), state.User, o.Value);
+    }
+
+    /// <summary>False if the user was deleted, disabled, or had their sessions revoked (security stamp changed).</summary>
+    public static async Task<bool> IsStillValidAsync(UserManager<AppUser> users, ClaimsPrincipal principal, IdentityOptions o)
+    {
+        if (principal.Identity?.IsAuthenticated != true) return false;
+        var user = await users.GetUserAsync(principal);
         if (user is null || await users.IsLockedOutAsync(user)) return false;
         if (!users.SupportsUserSecurityStamp) return true;
-        var stamp = state.User.FindFirstValue(o.Value.ClaimsIdentity.SecurityStampClaimType);
+        var stamp = principal.FindFirstValue(o.ClaimsIdentity.SecurityStampClaimType);
         return stamp == await users.GetSecurityStampAsync(user);
     }
 }

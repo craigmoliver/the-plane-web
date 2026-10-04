@@ -249,6 +249,57 @@ public class AuthTests(AppFactory app) : IClassFixture<AppFactory>
     }
 
     [Theory]
+    [InlineData("disable")]
+    [InlineData("sign-out-everywhere")]
+    [InlineData("delete")]
+    public async Task OpenCircuit_IsRevoked_OthersUnaffected(string action)
+    {
+        // Principals as an already-connected Blazor circuit holds them (issued at sign-in, never re-read).
+        async Task<(string Email, System.Security.Claims.ClaimsPrincipal Principal)> Connected()
+        {
+            var email = $"c{Guid.NewGuid():N}@example.com";
+            await using var scope = app.Services.CreateAsyncScope();
+            var sp = scope.ServiceProvider;
+            await sp.GetRequiredService<PlaneWeb.Infrastructure.Auth.AccountService>().CreateLocalAsync(email, null, "circuit password 1", false, false);
+            var um = sp.GetRequiredService<Microsoft.AspNetCore.Identity.UserManager<PlaneWeb.Infrastructure.Data.AppUser>>();
+            var factory = sp.GetRequiredService<Microsoft.AspNetCore.Identity.IUserClaimsPrincipalFactory<PlaneWeb.Infrastructure.Data.AppUser>>();
+            return (email, await factory.CreateAsync((await um.FindByNameAsync(email))!));
+        }
+        async Task<bool> Valid(System.Security.Claims.ClaimsPrincipal p)
+        {
+            await using var scope = app.Services.CreateAsyncScope();
+            return await PlaneWeb.Web.RevalidatingIdentityStateProvider.IsStillValidAsync(
+                scope.ServiceProvider.GetRequiredService<Microsoft.AspNetCore.Identity.UserManager<PlaneWeb.Infrastructure.Data.AppUser>>(), p,
+                scope.ServiceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<Microsoft.AspNetCore.Identity.IdentityOptions>>().Value);
+        }
+
+        var (victimEmail, victim) = await Connected();
+        var (_, control) = await Connected();
+        Assert.True(await Valid(victim));
+
+        await WithUser(victimEmail, async (um, u) =>
+        {
+            switch (action)
+            {
+                case "disable": await um.SetLockoutEndDateAsync(u, DateTimeOffset.MaxValue); break; // lockout alone, no stamp change
+                case "sign-out-everywhere": await um.UpdateSecurityStampAsync(u); break;
+                case "delete": await um.DeleteAsync(u); break;
+            }
+        });
+
+        Assert.False(await Valid(victim));
+        Assert.True(await Valid(control));
+        Assert.False(await Valid(new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity())));
+    }
+
+    [Fact]
+    public async Task LogoutWithBadToken_IsBadRequestNot500()
+    {
+        var r = await Client().PostAsync("/account/logout", new FormUrlEncodedContent(new Dictionary<string, string> { ["__RequestVerificationToken"] = "bogus" }));
+        Assert.True(r.StatusCode == HttpStatusCode.BadRequest, $"{r.StatusCode} -> {r.Headers.Location}");
+    }
+
+    [Theory]
     [InlineData("https://evil.example/x", "/")]
     [InlineData("//evil.example/x", "/")]
     [InlineData("/\\evil.example", "/")]
