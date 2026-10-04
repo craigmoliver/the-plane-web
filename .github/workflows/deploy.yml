@@ -19,7 +19,8 @@ concurrency:
 jobs:
   test:
     # Skip until Azure is configured (docs/azure.md), so pushes to main don't fail.
-    if: vars.AZURE_CLIENT_ID != ''
+    # Only main deploys (manual runs from other branches are refused).
+    if: vars.AZURE_CLIENT_ID != '' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,6 +49,7 @@ jobs:
 
   deploy:
     needs: build
+    if: github.ref == 'refs/heads/main'   # defense in depth with the environment's branch policy
     runs-on: ubuntu-latest
     environment:
       name: production   # add required reviewers here to gate deploys

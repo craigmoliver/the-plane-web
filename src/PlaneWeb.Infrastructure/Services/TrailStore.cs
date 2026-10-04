@@ -150,7 +150,8 @@ public sealed class TrailStore
     public async Task SaveAsync(string path, CancellationToken ct = default)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
-        var tmp = path + ".tmp";
+        // Unique temp name: during an Azure rollout the old and new replica briefly share /data.
+        var tmp = $"{path}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
         await File.WriteAllTextAsync(tmp, Serialize(), ct);
         File.Move(tmp, path, overwrite: true);
     }

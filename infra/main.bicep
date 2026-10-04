@@ -272,6 +272,9 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
       ]
       // Exactly one always-on replica: the app polls flight data in the background and
       // keeps in-memory state (pollers, trails), so it must neither scale to zero nor out.
+      // During a rollout the old and new revision overlap for a few seconds. That's safe: trails are
+      // written atomically with per-process temp files, the database is shared, and duplicate polling
+      // for a moment is harmless; at worst the old replica's final save drops a few seconds of trail.
       scale: {
         minReplicas: 1
         maxReplicas: 1

@@ -26,14 +26,17 @@ az group create -n $RG -l $LOC
 APP=$(az ad app create --display-name planeweb-deploy --query appId -o tsv)
 az ad sp create --id $APP
 az role assignment create --assignee $APP --role Contributor --scope /subscriptions/$SUB/resourceGroups/$RG
+# The token subject must match exactly. Newer repos use immutable IDs (repo:owner@id/name@id), so ask GitHub:
+PREFIX=$(gh api repos/$REPO/actions/oidc/customization/sub --jq .sub_claim_prefix)   # e.g. repo:craigmoliver@183209/the-plane-web@1403481538
 az ad app federated-credential create --id $APP --parameters "{
-  \"name\":\"main\",\"issuer\":\"https://token.actions.githubusercontent.com\",
-  \"subject\":\"repo:$REPO:environment:production\",\"audiences\":[\"api://AzureADTokenExchange\"]}"
+  \"name\":\"production\",\"issuer\":\"https://token.actions.githubusercontent.com\",
+  \"subject\":\"$PREFIX:environment:production\",\"audiences\":[\"api://AzureADTokenExchange\"]}"
 echo "AZURE_CLIENT_ID=$APP  AZURE_TENANT_ID=$(az account show --query tenantId -o tsv)"
 ```
 
 ## GitHub settings (repo → Settings → Secrets and variables → Actions)
-Create an environment named **production** (optionally with required reviewers to approve each deploy).
+Create an environment named **production**. Under **Deployment branches and tags** choose *Selected branches* → `main`
+(the workflow also refuses other refs), and optionally add required reviewers to approve each deploy.
 
 | Variables | |
 |---|---|
