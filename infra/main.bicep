@@ -42,7 +42,9 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
   }
 }
 
-// Only 80/443 inbound; everything else (including 22) falls through to the default deny rule.
+// Only 80/443 inbound. Azure's default rules (priority 65000+) include AllowVnetInBound, which would
+// otherwise let anything else in this VNet reach port 22 and others; the explicit deny below closes
+// that gap so only 80/443 is reachable from any source, matching the stated policy exactly.
 resource nsg 'Microsoft.Network/networkSecurityGroups@2024-01-01' = {
   name: '${name}-nsg'
   location: location
@@ -59,6 +61,19 @@ resource nsg 'Microsoft.Network/networkSecurityGroups@2024-01-01' = {
           sourcePortRange: '*'
           destinationAddressPrefix: '*'
           destinationPortRanges: ['80', '443']
+        }
+      }
+      {
+        name: 'DenyAllOtherInbound'
+        properties: {
+          priority: 4096 // just below the max custom-rule priority; still well ahead of Azure's 65000+ defaults
+          direction: 'Inbound'
+          access: 'Deny'
+          protocol: '*'
+          sourceAddressPrefix: '*'
+          sourcePortRange: '*'
+          destinationAddressPrefix: '*'
+          destinationPortRange: '*'
         }
       }
     ]
