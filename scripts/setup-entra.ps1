@@ -33,8 +33,11 @@ foreach ($c in "az", "gh") {
 if ($LASTEXITCODE -ne 0) { Run gh @("auth", "login") | Out-Null }
 
 Write-Host "== Signing in to Azure ==" -ForegroundColor Cyan
-if ($Tenant) { Run az @("login", "--tenant", $Tenant, "-o", "none") | Out-Null }
-else { Run az @("login", "-o", "none") | Out-Null }
+# --allow-no-subscriptions: a person can be allowed to register apps in a directory without having
+# access to any Azure subscription there (a common split at a company). account show still works
+# (it uses a placeholder context) and still reports the real tenant id.
+if ($Tenant) { Run az @("login", "--tenant", $Tenant, "--allow-no-subscriptions", "-o", "none") | Out-Null }
+else { Run az @("login", "--allow-no-subscriptions", "-o", "none") | Out-Null }
 $TenantId = Run az @("account", "show", "--query", "tenantId", "-o", "tsv")
 $Me = Run az @("ad", "signed-in-user", "show", "--query", "id", "-o", "tsv")
 $Upn = Run az @("ad", "signed-in-user", "show", "--query", "userPrincipalName", "-o", "tsv")
@@ -48,8 +51,14 @@ if (-not $AppId) {
         "--web-redirect-uris", $Redirect, "--query", "appId", "-o", "tsv")
     Write-Host "Created $AppId"
 } else {
-    Run az @("ad", "app", "update", "--id", $AppId, "--web-redirect-uris", $Redirect) | Out-Null
-    Write-Host "Reusing $AppId (redirect URI updated)"
+    # --web-redirect-uris replaces the whole list; merge in the new one instead of dropping any
+    # existing callback (e.g. a home-server deployment using the same app registration).
+    $existingJson = Run az @("ad", "app", "show", "--id", $AppId, "--query", "web.redirectUris", "-o", "json")
+    $uris = [string[]]($existingJson | ConvertFrom-Json)
+    if (-not $uris) { $uris = @() }
+    if ($uris -notcontains $Redirect) { $uris += $Redirect }
+    Run az (@("ad", "app", "update", "--id", $AppId, "--web-redirect-uris") + $uris) | Out-Null
+    Write-Host "Reusing $AppId (redirect URIs: $($uris -join ', '))"
 }
 # Enterprise application (lets IT require assignment / restrict to a group later)
 & az ad sp show --id $AppId -o none 2>$null

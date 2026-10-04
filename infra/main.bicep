@@ -161,7 +161,7 @@ resource backupPolicy 'Microsoft.RecoveryServices/vaults/backupPolicies@2024-04-
   }
 }
 
-resource protectedItem 'Microsoft.RecoveryServices/vaults/backupFabrics/backupProtectionContainers/protectedItems@2024-04-01' = {
+resource protectedItem 'Microsoft.RecoveryServices/vaults/backupFabrics/protectionContainers/protectedItems@2024-04-01' = {
   name: '${vault.name}/Azure/iaasvmcontainer;iaasvmcontainerv2;${resourceGroup().name};${vm.name}/vm;iaasvmcontainerv2;${resourceGroup().name};${vm.name}'
   properties: {
     protectedItemType: 'Microsoft.Compute/virtualMachines'

@@ -2,24 +2,35 @@
 # Template for the one-shot VM setup script. Filled in by deploy.yml (sed substitution of the
 # __PLACEHOLDER__ tokens below) and run via Azure Run Command, which executes it on the VM over
 # the control plane -- no SSH port is involved.
-#
-# App secrets (.env) are base64-embedded and written byte-for-byte; they are never passed through
-# a shell here, because a password/secret containing $, `, or " would otherwise be parsed as shell
-# syntax. Docker Compose's own env_file reader treats .env as plain KEY=VALUE text, not a shell
-# script, so this is safe. PLANEWEB_IMAGE/PLANEWEB_HOST are not secrets (an image tag and an
-# Azure-assigned DNS name) and are safe to export directly for Compose's own ${...} substitution.
 set -euo pipefail
 umask 077
 
+# The VM can report "provisioned" while cloud-init (infra/cloud-init.yaml) is still installing Docker
+# on first boot; wait for it to finish (success or failure) before trying to use docker/compose.
+if ! cloud-init status --wait >/dev/null; then
+  echo "cloud-init did not finish cleanly:"
+  cloud-init status --long || true
+  exit 1
+fi
+
 mkdir -p /opt/planeweb
 cd /opt/planeweb
+
+# Project .env: only non-secret values (Compose always expands $-sequences when loading this file,
+# so secrets must never go here). Persisted so later manual `docker compose ...` commands from this
+# directory also resolve ${PLANEWEB_IMAGE}/${PLANEWEB_HOST} without needing them re-exported.
+cat > .env <<ENVEOF
+PLANEWEB_IMAGE=__PLANEWEB_IMAGE__
+PLANEWEB_HOST=__PLANEWEB_HOST__
+ENVEOF
+
+# App configuration (passwords, client secrets, ...): written byte-for-byte, loaded by Compose with
+# format: raw (see docker-compose.prod.yml), so values may safely contain $, `, " etc.
+echo '__SECRETS_B64__' | base64 -d > secrets.env
+chmod 600 secrets.env .env
+
 echo '__COMPOSE_B64__' | base64 -d > docker-compose.yml
 echo '__CADDY_B64__' | base64 -d > Caddyfile
-echo '__ENV_B64__' | base64 -d > .env
-chmod 600 .env
-
-export PLANEWEB_IMAGE='__PLANEWEB_IMAGE__'
-export PLANEWEB_HOST='__PLANEWEB_HOST__'
 
 GHCR_USERNAME='__GHCR_USERNAME__'
 GHCR_TOKEN_B64='__GHCR_TOKEN_B64__'

@@ -19,21 +19,31 @@ for c in az gh; do command -v $c >/dev/null || { echo "Missing '$c'. Install it 
 gh auth status >/dev/null 2>&1 || gh auth login
 
 echo "== Signing in to Azure =="
-if [[ -n "$TENANT" ]]; then az login --tenant "$TENANT" -o none
-else az login -o none; fi
+# --allow-no-subscriptions: a person can be allowed to register apps in a directory without having
+# access to any Azure subscription there (a common split at a company). account show still works
+# (it uses a placeholder context) and still reports the real tenant id.
+if [[ -n "$TENANT" ]]; then az login --tenant "$TENANT" --allow-no-subscriptions -o none
+else az login --allow-no-subscriptions -o none; fi
 TENANT_ID=$(az account show --query tenantId -o tsv)
 ME=$(az ad signed-in-user show --query id -o tsv)
 echo "Directory: $TENANT_ID   You: $(az ad signed-in-user show --query userPrincipalName -o tsv)"
 
 echo "== App registration =="
+NEW_URI="$APP_URL/signin-oidc"
 APP_ID=$(az ad app list --display-name "$NAME" --query "[0].appId" -o tsv)
 if [[ -z "$APP_ID" ]]; then
   APP_ID=$(az ad app create --display-name "$NAME" --sign-in-audience AzureADMyOrg \
-    --web-redirect-uris "$APP_URL/signin-oidc" --query appId -o tsv)
+    --web-redirect-uris "$NEW_URI" --query appId -o tsv)
   echo "Created $APP_ID"
 else
-  az ad app update --id "$APP_ID" --web-redirect-uris "$APP_URL/signin-oidc"
-  echo "Reusing $APP_ID (redirect URI updated)"
+  # --web-redirect-uris replaces the whole list; merge in the new one instead of dropping any
+  # existing callback (e.g. a home-server deployment using the same app registration).
+  mapfile -t URIS < <(az ad app show --id "$APP_ID" --query "web.redirectUris[]" -o tsv)
+  found=0
+  for u in ${URIS[@]+"${URIS[@]}"}; do [[ "$u" == "$NEW_URI" ]] && found=1; done
+  [[ $found -eq 0 ]] && URIS+=("$NEW_URI")
+  az ad app update --id "$APP_ID" --web-redirect-uris "${URIS[@]}"
+  echo "Reusing $APP_ID (redirect URIs: ${URIS[*]})"
 fi
 # Enterprise application (lets IT require assignment / restrict to a group later)
 az ad sp show --id "$APP_ID" -o none 2>/dev/null || az ad sp create --id "$APP_ID" -o none

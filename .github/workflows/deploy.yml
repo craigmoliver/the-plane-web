@@ -64,13 +64,21 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Generate ephemeral SSH key
-        # The Linux VM creation API requires a key, but no SSH port is open (see infra/main.bicep's NSG),
-        # so this key is never usable. Generated fresh each run and never saved.
+      - name: Determine the VM's SSH key
+        # Azure rejects changing a VM's SSH key after creation (PropertyChangeNotAllowed), so redeploys
+        # must reuse the existing one; only the first deploy generates a fresh ephemeral key. Either way
+        # it is never saved and, because no NSG rule opens port 22 (see infra/main.bicep), it is never
+        # actually usable for SSH -- it exists purely to satisfy the Linux VM creation API.
         run: |
-          ssh-keygen -t ed25519 -N '' -f "$RUNNER_TEMP/deploy_key" -q -C 'unused-vm-creation-only'
-          echo "SSH_PUBLIC_KEY=$(cat "$RUNNER_TEMP/deploy_key.pub")" >> "$GITHUB_ENV"
-          rm -f "$RUNNER_TEMP/deploy_key" "$RUNNER_TEMP/deploy_key.pub"
+          existing=$(az vm show -g "${{ vars.AZURE_RESOURCE_GROUP }}" -n planeweb-vm \
+            --query "osProfile.linuxConfiguration.ssh.publicKeys[0].keyData" -o tsv 2>/dev/null || true)
+          if [ -n "$existing" ] && [ "$existing" != "None" ]; then
+            echo "SSH_PUBLIC_KEY=$existing" >> "$GITHUB_ENV"
+          else
+            ssh-keygen -t ed25519 -N '' -f "$RUNNER_TEMP/deploy_key" -q -C 'unused-vm-creation-only'
+            echo "SSH_PUBLIC_KEY=$(cat "$RUNNER_TEMP/deploy_key.pub")" >> "$GITHUB_ENV"
+            rm -f "$RUNNER_TEMP/deploy_key" "$RUNNER_TEMP/deploy_key.pub"
+          fi
 
       - name: Write parameters file
         # Values go through JSON (not a command line) so secrets with spaces/quotes survive verbatim.
@@ -95,9 +103,9 @@ jobs:
           parameters: ${{ runner.temp }}/params.json
 
       - name: Build the remote setup script
-        # Compose file, Caddyfile and .env are base64-embedded so no secret value can break shell
-        # quoting or be sourced as code. Only this execution's stdout/stderr is returned by Run
-        # Command; the script body itself is not persisted as a resource (ad-hoc invoke).
+        # Compose file and the app's own configuration are base64-embedded so no secret value can
+        # break shell quoting or be misparsed as code. Only this execution's stdout/stderr is returned
+        # by Run Command; the script body itself is not persisted as a resource (ad-hoc invoke).
         env:
           PLANEWEB_IMAGE: ${{ needs.build.outputs.image }}
           PLANEWEB_HOST: ${{ steps.infra.outputs.host }}
@@ -113,9 +121,11 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          # Only app secrets go in .env; it is written byte-for-byte on the VM and never shell-sourced
-          # (see the template), so values may safely contain $, `, " etc.
-          ENV_FILE="$RUNNER_TEMP/planeweb.env"
+          # The app's own configuration (passwords, client secrets, ...): written byte-for-byte on the
+          # VM and loaded by Compose with format: raw (see docker-compose.prod.yml and the template),
+          # so values may safely contain $, `, " etc. Must never go through Compose's own project .env,
+          # which is always variable-expanded -- see docker-compose.prod.yml's header comment.
+          SECRETS_FILE="$RUNNER_TEMP/planeweb.secrets.env"
           {
             echo "PlaneWeb__Auth__AdminEmail=$ADMIN_EMAIL"
             echo "PlaneWeb__Auth__AdminPassword=$ADMIN_PASSWORD"
@@ -129,13 +139,13 @@ jobs:
               id=$(echo "$raw" | xargs)
               if [ -n "$id" ]; then echo "PlaneWeb__Auth__Entra__AdminObjectIds__$i=$id"; i=$((i + 1)); fi
             done
-          } > "$ENV_FILE"
+          } > "$SECRETS_FILE"
 
-          ENV_B64=$(base64 -w0 < "$ENV_FILE")
+          SECRETS_B64=$(base64 -w0 < "$SECRETS_FILE")
           COMPOSE_B64=$(base64 -w0 < docker-compose.prod.yml)
           CADDY_B64=$(base64 -w0 < Caddyfile)
           GHCR_TOKEN_B64=$(printf '%s' "$GHCR_TOKEN" | base64 -w0)
-          rm -f "$ENV_FILE"
+          rm -f "$SECRETS_FILE"
 
           SCRIPT="$RUNNER_TEMP/remote-script.sh"
           cp infra/remote-setup.sh.template "$SCRIPT"
@@ -144,7 +154,7 @@ jobs:
           sed -i \
             -e "s|__COMPOSE_B64__|$COMPOSE_B64|" \
             -e "s|__CADDY_B64__|$CADDY_B64|" \
-            -e "s|__ENV_B64__|$ENV_B64|" \
+            -e "s|__SECRETS_B64__|$SECRETS_B64|" \
             -e "s|__PLANEWEB_IMAGE__|$PLANEWEB_IMAGE|" \
             -e "s|__PLANEWEB_HOST__|$PLANEWEB_HOST|" \
             -e "s|__GHCR_USERNAME__|$GHCR_USERNAME|" \

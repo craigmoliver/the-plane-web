@@ -1,12 +1,22 @@
 # Deployed to the Azure VM by .github/workflows/deploy.yml (via Run Command).
 # Pulls the published image instead of building, and always runs behind Caddy for HTTPS.
 # Equivalent to: docker-compose.yml + docker-compose.https.yml, with build: replaced by a pulled image.
+#
+# Two files, deliberately kept separate:
+#  - .env            Compose's own auto-loaded project file, used only to interpolate ${PLANEWEB_IMAGE}
+#                     and ${PLANEWEB_HOST} below. Compose always applies variable expansion to this
+#                     file, so only non-secret values (an image tag, a DNS name) belong in it.
+#  - secrets.env      The app's actual configuration (passwords, client secrets, ...), loaded with
+#                     `format: raw` so Compose passes each line through byte-for-byte with no expansion;
+#                     a value containing $, `, or " is otherwise corrupted or, worse, partially dropped.
 services:
   planeweb:
-    image: ${PLANEWEB_IMAGE:?set PLANEWEB_IMAGE}
+    image: ${PLANEWEB_IMAGE:?set PLANEWEB_IMAGE in .env}
     container_name: planeweb
     restart: unless-stopped
-    env_file: .env
+    env_file:
+      - path: secrets.env
+        format: raw
     environment:
       - PlaneWeb__Provider=adsb.lol
       - PlaneWeb__PollSeconds=5
