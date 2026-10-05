@@ -148,19 +148,75 @@ public class GoogleProvisioningTests
         var (sp, _, _, ctx) = Build(db);
         var opts = new GoogleOptions
         {
-            AdminEmails = ["craigmoliver@hotmail.com", "craigmoliver@gmail.com"],
-            AllowedEmails = ["gradypjohnson@gmail.com"],
+            AdminEmails = ["admin1@example.com", "admin2@example.com"],
+            AllowedEmails = ["user@example.com"],
         };
         await AccountService.EnsureGoogleAllowlistSeededAsync(ctx, opts, TimeProvider.System);
         Assert.Equal(3, await ctx.GoogleAllowedUsers.CountAsync());
-        Assert.True(ctx.GoogleAllowedUsers.Any(x => x.Email == "craigmoliver@hotmail.com" && x.IsAdmin));
-        Assert.True(ctx.GoogleAllowedUsers.Any(x => x.Email == "gradypjohnson@gmail.com" && !x.IsAdmin));
+        Assert.True(ctx.GoogleAllowedUsers.Any(x => x.Email == "admin1@example.com" && x.IsAdmin));
+        Assert.True(ctx.GoogleAllowedUsers.Any(x => x.Email == "user@example.com" && !x.IsAdmin));
 
         // A later change (e.g. via the admin UI) must not be overwritten by seeding again.
         ctx.GoogleAllowedUsers.Add(new GoogleAllowedUser { Email = "new@gmail.com", AddedAt = DateTimeOffset.UtcNow });
         await ctx.SaveChangesAsync();
         await AccountService.EnsureGoogleAllowlistSeededAsync(ctx, opts, TimeProvider.System);
         Assert.Equal(4, await ctx.GoogleAllowedUsers.CountAsync());
+        sp.Dispose();
+    }
+
+    [Fact]
+    public async Task EmailMatch_IsCaseInsensitiveAndLocalOnly()
+    {
+        using var db = new TestDb();
+        var (sp, accounts, users, ctx) = Build(db);
+        await accounts.EnsureRolesAsync();
+        // Differently-cased email than Google reports; must still match via normalization.
+        await accounts.CreateLocalAsync("Sam@Example.com", "Sam", "a local password 1", admin: false);
+        // An Entra-provisioned (external) account sharing the email must not be matched/linked.
+        var entraUser = new AppUser { UserName = "entra-x", Email = "sam@example.com", IsExternal = true };
+        await users.CreateAsync(entraUser);
+        await AllowAsync(ctx, "sam@example.com");
+
+        var (user, error) = await accounts.ProvisionGoogleAsync(new GoogleIdentity("sub-sam", "sam@example.com", true, "Sam"), ctx);
+        Assert.Null(error);
+        Assert.NotEqual(entraUser.Id, user!.Id);
+        Assert.False(user.IsExternal); // linked to the local account, not re-matched to the Entra one
+        sp.Dispose();
+    }
+
+    [Fact]
+    public async Task ToggleAdmin_AppliesImmediatelyToAlreadyLinkedAccount()
+    {
+        using var db = new TestDb();
+        var (sp, accounts, users, ctx) = Build(db);
+        await accounts.EnsureRolesAsync();
+        await AllowAsync(ctx, "promote@example.com");
+        var (user, _) = await accounts.ProvisionGoogleAsync(new GoogleIdentity("sub-p", "promote@example.com", true, "P"), ctx);
+        Assert.False(await users.IsInRoleAsync(user!, Roles.Admin));
+
+        var r1 = await accounts.SetGoogleAdminAsync("promote@example.com", admin: true);
+        Assert.True(r1.Succeeded);
+        Assert.True(await users.IsInRoleAsync(user!, Roles.Admin));
+
+        var r2 = await accounts.SetGoogleAdminAsync("promote@example.com", admin: false);
+        Assert.True(r2.Succeeded);
+        Assert.False(await users.IsInRoleAsync(user!, Roles.Admin));
+        sp.Dispose();
+    }
+
+    [Fact]
+    public async Task ToggleAdmin_IgnoresAccountsWithoutAGoogleLogin()
+    {
+        using var db = new TestDb();
+        var (sp, accounts, users, ctx) = Build(db);
+        await accounts.EnsureRolesAsync();
+        // A local account sharing the email but never signed in with Google (not provisioned/linked yet).
+        await accounts.CreateLocalAsync("untouched@example.com", "U", "a local password 1", admin: false);
+
+        var r = await accounts.SetGoogleAdminAsync("untouched@example.com", admin: true);
+        Assert.True(r.Succeeded);
+        var local = await users.FindByNameAsync("untouched@example.com");
+        Assert.False(await users.IsInRoleAsync(local!, Roles.Admin));
         sp.Dispose();
     }
 }

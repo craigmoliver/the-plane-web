@@ -82,6 +82,8 @@ public static class AuthSetup
                 o.ClientSecret = auth.Google.ClientSecret!;
                 o.CallbackPath = "/signin-google";
                 o.SaveTokens = false;
+                // Not mapped by default; GoogleIdentity.FromPrincipal reads "email_verified" to refuse unverified emails.
+                o.ClaimActions.MapJsonKey("email_verified", "verified_email", System.Security.Claims.ClaimValueTypes.Boolean);
             });
         }
 

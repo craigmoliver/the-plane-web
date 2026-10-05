@@ -198,7 +198,10 @@ public sealed class AccountService(UserManager<AppUser> users, RoleManager<Ident
         var user = await users.FindByLoginAsync(GoogleProvider, id.Subject);
         if (user is null)
         {
-            var locals = await users.Users.Where(u => u.Email == email).ToListAsync();
+            // Normalized, case-insensitive match, and only to local accounts (Entra/Google accounts are
+            // already keyed by their own provider, not by email).
+            var normalizedEmail = users.NormalizeEmail(email);
+            var locals = await users.Users.Where(u => u.NormalizedEmail == normalizedEmail && !u.IsExternal).ToListAsync();
             if (locals.Count > 1)
                 return (null, $"Several accounts use {email}; ask an admin to link the right one first.");
 
@@ -245,6 +248,28 @@ public sealed class AccountService(UserManager<AppUser> users, RoleManager<Ident
             .Select(g => new GoogleAllowedUser { Email = g.Key, IsAdmin = g.Any(x => x.Admin), AddedBy = "seed", AddedAt = now });
         db.GoogleAllowedUsers.AddRange(rows);
         await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Applies an allowlist admin-flag change immediately to any account already linked to this email via
+    /// Google (normally admin is only (re-)applied at the next sign-in). Only touches accounts with an
+    /// existing Google login for this email — not every local account that happens to share it — and does
+    /// nothing to an account made admin through another source (e.g. Entra) when demoting here.
+    /// </summary>
+    public async Task<IdentityResult> SetGoogleAdminAsync(string email, bool admin)
+    {
+        var normalized = users.NormalizeEmail(email);
+        var candidates = await users.Users.Where(u => u.NormalizedEmail == normalized).ToListAsync();
+        foreach (var u in candidates)
+        {
+            var logins = await users.GetLoginsAsync(u);
+            if (!logins.Any(l => l.LoginProvider == GoogleProvider)) continue;
+            if (admin == await users.IsInRoleAsync(u, Roles.Admin)) continue;
+            var r = admin ? await users.AddToRoleAsync(u, Roles.Admin) : await users.RemoveFromRoleAsync(u, Roles.Admin);
+            if (!r.Succeeded) return r;
+            await users.UpdateSecurityStampAsync(u); // role change applies on next check (within RevalidateSeconds)
+        }
+        return IdentityResult.Success;
     }
 
     public async Task RecordSignInAsync(AppUser u)

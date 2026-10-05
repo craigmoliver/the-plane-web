@@ -104,15 +104,23 @@
     private async Task ToggleAdminAsync(GoogleAllowedUser r)
     {
         notice = error = null;
+        var newAdminState = !r.IsAdmin;
         await WithDb(async db =>
         {
             var row = await db.GoogleAllowedUsers.FindAsync(r.Id);
             if (row is null) return false;
-            row.IsAdmin = !row.IsAdmin;
+            row.IsAdmin = newAdminState;
             await db.SaveChangesAsync();
             return true;
         });
-        notice = r.IsAdmin ? "Admin removed." : "Admin granted.";
+        // Apply immediately to anyone already signed in via Google with this email, rather than waiting
+        // for their next sign-in to pick up the new allowlist row.
+        await using (var scope = Scopes.CreateAsyncScope())
+        {
+            var result = await scope.ServiceProvider.GetRequiredService<AccountService>().SetGoogleAdminAsync(r.Email, newAdminState);
+            if (!result.Succeeded) { error = string.Join(" ", result.Errors.Select(e => e.Description)); return; }
+        }
+        notice = newAdminState ? "Admin granted." : "Admin removed.";
         await LoadAsync();
     }
 
