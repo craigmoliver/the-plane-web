@@ -32,22 +32,22 @@ saving as a bare VM price alone suggests — the public IP and Backup both carry
 
 ### If you deployed the earlier Container Apps + PostgreSQL design
 This VM design uses an incompatible network layout in the same resource-group name (`planeweb-rg`).
-`az group create` does not clear an existing group, so its old Container Apps/PostgreSQL resources
-would keep billing and their VNet subnets can conflict with the new ones. Nothing of value was ever
-stored there if you only reached a partial/failed deploy; if you did reach a working deployment and
-care about its data, back it up first (e.g. `pg_dump` the database). Then:
+The deploy workflow automatically detects and deletes old Container Apps infrastructure before deploying
+the new VM. If you care about any data in the old deployment (e.g. a PostgreSQL database), back it up first
+(e.g. `pg_dump` the database) before triggering a deploy. The cleanup happens automatically on the next
+deployment attempt, or you can manually delete and recreate:
 ```bash
 az group delete -n planeweb-rg --yes   # irreversible; everything in it is deleted
 ```
-Recreate it fresh with the commands below.
 
 ```bash
 SUB=<subscription id>; RG=planeweb-rg; LOC=eastus2; REPO=craigmoliver/the-plane-web
 az account set -s $SUB
-# Register resource providers once (the deploy identity only has resource-group rights and can't).
-for p in Microsoft.Compute Microsoft.Network Microsoft.RecoveryServices; do
-  az provider register -n $p --wait
-done
+# Resource providers are now registered automatically by the deploy workflow,
+# but you can register them manually here if needed (safe to run multiple times):
+# for p in Microsoft.Compute Microsoft.Network Microsoft.RecoveryServices; do
+#   az provider register -n $p --wait
+# done
 az group create -n $RG -l $LOC
 
 # Identity GitHub Actions signs in as (OIDC; no secret stored in GitHub)
