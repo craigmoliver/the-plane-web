@@ -65,16 +65,18 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Register Azure resource providers
-        # Required once per subscription; can be run multiple times safely
+        # Required once per subscription; can be run multiple times safely.
+        # Using --wait ensures provider is fully registered before proceeding.
         run: |
           for provider in Microsoft.Compute Microsoft.Network Microsoft.RecoveryServices; do
-            az provider register -n $provider --accept-terms
+            az provider register -n $provider --accept-terms --wait
           done
 
       - name: Prepare resource group
         # If upgrading from Container Apps + PostgreSQL design (which used incompatible VNet/subnet layout),
         # delete the old group to avoid conflict errors (InUseSubnetCannotBeDeleted, etc.).
         # On first deploy, the group doesn't exist yet; az group delete is idempotent.
+        # Deletion is async; we poll for completion with a 4-minute timeout (120 retries × 2s).
         run: |
           RG="${{ vars.AZURE_RESOURCE_GROUP }}"
           # Check if group exists with old resources (Container Apps vnet + Legion Legion subnet)
