@@ -73,7 +73,8 @@ jobs:
         continue-on-error: true
         run: |
           for provider in Microsoft.Compute Microsoft.Network Microsoft.RecoveryServices; do
-            az provider register -n $provider --accept-terms --wait 2>&1 | grep -v "^WARNING:" || true
+            # Filter deprecation warnings from stderr while preserving exit code
+            az provider register -n $provider --accept-terms --wait 2> >(grep -v "^WARNING:" >&2) || true
           done
 
       - name: Prepare resource group

@@ -43,11 +43,12 @@ az group delete -n planeweb-rg --yes   # irreversible; everything in it is delet
 ```bash
 SUB=<subscription id>; RG=planeweb-rg; LOC=eastus2; REPO=craigmoliver/the-plane-web
 az account set -s $SUB
-# Resource providers are now registered automatically by the deploy workflow,
-# but you can register them manually here if needed (safe to run multiple times):
-# for p in Microsoft.Compute Microsoft.Network Microsoft.RecoveryServices; do
-#   az provider register -n $p --wait
-# done
+# Register resource providers (required once per subscription before first deployment).
+# The deploy workflow will attempt this, but the deployment identity may lack subscription-level
+# permissions, so an admin with higher privileges must run this once:
+for p in Microsoft.Compute Microsoft.Network Microsoft.RecoveryServices; do
+  az provider register -n $p --wait
+done
 az group create -n $RG -l $LOC
 
 # Identity GitHub Actions signs in as (OIDC; no secret stored in GitHub)
