@@ -152,7 +152,9 @@ resource vault 'Microsoft.RecoveryServices/vaults@2024-04-01' = {
   name: '${name}-vault'
   location: location
   sku: { name: 'Standard', tier: 'Standard' }
-  properties: {}
+  properties: {
+    publicNetworkAccess: 'Enabled'
+  }
 }
 
 resource backupPolicy 'Microsoft.RecoveryServices/vaults/backupPolicies@2024-04-01' = {
