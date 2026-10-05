@@ -64,6 +64,37 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Register Azure resource providers
+        # Required once per subscription; can be run multiple times safely
+        run: |
+          for provider in Microsoft.Compute Microsoft.Network Microsoft.RecoveryServices; do
+            az provider register -n $provider --accept-terms
+          done
+
+      - name: Prepare resource group
+        # If upgrading from Container Apps + PostgreSQL design (which used incompatible VNet/subnet layout),
+        # delete the old group to avoid conflict errors (InUseSubnetCannotBeDeleted, etc.).
+        # On first deploy, the group doesn't exist yet; az group delete is idempotent.
+        run: |
+          RG="${{ vars.AZURE_RESOURCE_GROUP }}"
+          # Check if group exists with old resources (Container Apps vnet + Legion Legion subnet)
+          if az group exists -n "$RG" | grep -q true; then
+            if az network vnet list -g "$RG" --query "[?contains(name, 'planeweb')].{name:name, subnets:subnets[].name}" -o json 2>/dev/null | grep -q '"apps"'; then
+              echo "Old Container Apps infrastructure detected; deleting resource group to avoid subnet conflicts..."
+              az group delete -n "$RG" --yes --no-wait
+              echo "Resource group deletion started (async). Waiting for completion..."
+              for i in {1..60}; do
+                if ! az group exists -n "$RG" 2>/dev/null | grep -q true; then
+                  echo "Resource group deleted successfully after $((i * 2)) seconds"
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+          # Ensure group exists for new VM deployment
+          az group create -n "$RG" -l eastus2 --tags "app=planeweb" -o none
+
       - name: Determine the VM's SSH key
         # Azure rejects changing a VM's SSH key after creation (PropertyChangeNotAllowed), so redeploys
         # must reuse the existing one; only the first deploy generates a fresh ephemeral key. Either way
