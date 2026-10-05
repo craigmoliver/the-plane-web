@@ -246,6 +246,18 @@ public sealed class AccountService(UserManager<AppUser> users, RoleManager<Ident
         if (state is null) { state = new AuthSeedState(); db.AuthSeedState.Add(state); }
         if (state.GoogleAllowlistSeeded) return;
 
+        // Upgrading from a version that predates this marker: the allowlist table may already have rows
+        // (e.g. from an earlier seed, or an admin's own additions) while this new, separate marker table
+        // starts empty either way. Treat "already has rows" as "already seeded" rather than reseeding —
+        // otherwise this would crash on the unique email index, or silently restore an entry an admin had
+        // deliberately removed.
+        if (await db.GoogleAllowedUsers.AnyAsync())
+        {
+            state.GoogleAllowlistSeeded = true;
+            await db.SaveChangesAsync();
+            return;
+        }
+
         var now = time.GetUtcNow();
         var rows = o.AdminEmails.Select(e => (Email: e, Admin: true))
             .Concat(o.AllowedEmails.Select(e => (Email: e, Admin: false)))

@@ -254,4 +254,31 @@ public class GoogleProvisioningTests
         Assert.Equal(0, await ctx.GoogleAllowedUsers.CountAsync());
         sp.Dispose();
     }
+
+    [Fact]
+    public async Task Seeding_IsSafeWhenUpgradingAnAllowlistThatPredatesTheMarker()
+    {
+        using var db = new TestDb();
+        var (sp, _, _, ctx) = Build(db);
+        // Simulates an existing deployment: rows already present (e.g. an admin's own additions, or an
+        // earlier seed) but no AuthSeedState row yet, because the marker table is new.
+        ctx.GoogleAllowedUsers.Add(new GoogleAllowedUser { Email = "existing@example.com", IsAdmin = true, AddedAt = DateTimeOffset.UtcNow });
+        await ctx.SaveChangesAsync();
+        Assert.Empty(await ctx.AuthSeedState.ToListAsync());
+
+        // Must not crash on the unique email index, and must not add config emails or restore anything
+        // an admin may have already removed — the existing data is treated as already seeded.
+        var opts = new GoogleOptions { AdminEmails = ["new-from-config@example.com"] };
+        await AccountService.EnsureGoogleAllowlistSeededAsync(ctx, opts, TimeProvider.System);
+
+        var rows = await ctx.GoogleAllowedUsers.ToListAsync();
+        Assert.Single(rows);
+        Assert.Equal("existing@example.com", rows[0].Email);
+        Assert.True((await ctx.AuthSeedState.SingleAsync()).GoogleAllowlistSeeded);
+
+        // And a second call (e.g. next restart) is still a no-op.
+        await AccountService.EnsureGoogleAllowlistSeededAsync(ctx, opts, TimeProvider.System);
+        Assert.Single(await ctx.GoogleAllowedUsers.ToListAsync());
+        sp.Dispose();
+    }
 }
