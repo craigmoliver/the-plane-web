@@ -65,7 +65,7 @@ Settings are stored in SQLite at `/data/planeweb.db` and flight trails in `/data
 
 
 ## Deploy to Azure
-See [docs/azure.md](docs/azure.md): Container Apps + PostgreSQL, deployed by GitHub Actions on every push to `main`.
+See [docs/azure.md](docs/azure.md): a small Linux VM running this same Docker Compose setup (SQLite + Caddy for HTTPS), deployed by GitHub Actions on every push to `main`.
 
 ## Develop
 ```bash

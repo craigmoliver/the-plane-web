@@ -1,6 +1,8 @@
 name: Deploy to Azure
 
-# Builds the image, pushes it to GitHub Container Registry, and deploys infra/main.bicep.
+# Builds the image, pushes it to GitHub Container Registry, deploys infra/main.bicep (a small VM),
+# then uses Azure Run Command to pull the image and start it with Docker Compose + Caddy for HTTPS.
+# Run Command works over the Azure control plane via the VM agent; no SSH port is ever open.
 # One-time setup: docs/azure.md (OIDC federated credential, repo variables and secrets).
 on:
   push:
@@ -53,7 +55,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: production   # add required reviewers here to gate deploys
-      url: ${{ steps.deploy.outputs.url }}
+      url: ${{ steps.infra.outputs.url }}
     steps:
       - uses: actions/checkout@v4
       - uses: azure/login@v2
@@ -61,40 +63,36 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Determine the VM's SSH key
+        # Azure rejects changing a VM's SSH key after creation (PropertyChangeNotAllowed), so redeploys
+        # must reuse the existing one; only the first deploy generates a fresh ephemeral key. Either way
+        # it is never saved and, because no NSG rule opens port 22 (see infra/main.bicep), it is never
+        # actually usable for SSH -- it exists purely to satisfy the Linux VM creation API.
+        run: |
+          existing=$(az vm show -g "${{ vars.AZURE_RESOURCE_GROUP }}" -n planeweb-vm \
+            --query "osProfile.linuxConfiguration.ssh.publicKeys[0].keyData" -o tsv 2>/dev/null || true)
+          if [ -n "$existing" ] && [ "$existing" != "None" ]; then
+            echo "SSH_PUBLIC_KEY=$existing" >> "$GITHUB_ENV"
+          else
+            ssh-keygen -t ed25519 -N '' -f "$RUNNER_TEMP/deploy_key" -q -C 'unused-vm-creation-only'
+            echo "SSH_PUBLIC_KEY=$(cat "$RUNNER_TEMP/deploy_key.pub")" >> "$GITHUB_ENV"
+            rm -f "$RUNNER_TEMP/deploy_key" "$RUNNER_TEMP/deploy_key.pub"
+          fi
+
       - name: Write parameters file
-        # Values go through JSON (not a command line) so passwords with spaces or quotes survive verbatim.
+        # Values go through JSON (not a command line) so secrets with spaces/quotes survive verbatim.
         env:
-          IMAGE: ${{ needs.build.outputs.image }}
-          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-          ADMIN_EMAIL: ${{ vars.ADMIN_EMAIL }}
-          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
-          ENTRA_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
-          ENTRA_CLIENT_ID: ${{ vars.ENTRA_CLIENT_ID }}
-          ENTRA_CLIENT_SECRET: ${{ secrets.ENTRA_CLIENT_SECRET }}
-          ENTRA_ADMIN_OBJECT_IDS: ${{ vars.ENTRA_ADMIN_OBJECT_IDS }}
-          LOCAL_LOGIN: ${{ vars.LOCAL_LOGIN }}
+          ADMIN_SSH_PUBLIC_KEY: ${{ env.SSH_PUBLIC_KEY }}
         run: |
           umask 077
           jq -n '{
             "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
             contentVersion: "1.0.0.0",
-            parameters: {
-              image:              { value: env.IMAGE },
-              registryUsername:   { value: env.GHCR_USERNAME },
-              registryPassword:   { value: env.GHCR_TOKEN },
-              postgresPassword:   { value: env.POSTGRES_PASSWORD },
-              adminEmail:         { value: env.ADMIN_EMAIL },
-              adminPassword:      { value: env.ADMIN_PASSWORD },
-              entraTenantId:      { value: env.ENTRA_TENANT_ID },
-              entraClientId:      { value: env.ENTRA_CLIENT_ID },
-              entraClientSecret:  { value: env.ENTRA_CLIENT_SECRET },
-              localLogin:         { value: (((env.LOCAL_LOGIN // "true") | ascii_downcase) != "false") },
-              entraAdminObjectIds:{ value: (env.ENTRA_ADMIN_OBJECT_IDS | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))) }
-            }
+            parameters: { adminSshPublicKey: { value: env.ADMIN_SSH_PUBLIC_KEY } }
           }' > "$RUNNER_TEMP/params.json"
-      - id: deploy
+
+      - id: infra
         uses: azure/arm-deploy@v2
         with:
           scope: resourcegroup
@@ -103,11 +101,79 @@ jobs:
           deploymentName: planeweb-${{ github.run_number }}
           failOnStdErr: false
           parameters: ${{ runner.temp }}/params.json
+
+      - name: Build the remote setup script
+        # Compose file and the app's own configuration are base64-embedded so no secret value can
+        # break shell quoting or be misparsed as code. Only this execution's stdout/stderr is returned
+        # by Run Command; the script body itself is not persisted as a resource (ad-hoc invoke).
+        env:
+          PLANEWEB_IMAGE: ${{ needs.build.outputs.image }}
+          PLANEWEB_HOST: ${{ steps.infra.outputs.host }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          ADMIN_EMAIL: ${{ vars.ADMIN_EMAIL }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          LOCAL_LOGIN: ${{ vars.LOCAL_LOGIN }}
+          ENTRA_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
+          ENTRA_CLIENT_ID: ${{ vars.ENTRA_CLIENT_ID }}
+          ENTRA_CLIENT_SECRET: ${{ secrets.ENTRA_CLIENT_SECRET }}
+          ENTRA_ADMIN_OBJECT_IDS: ${{ vars.ENTRA_ADMIN_OBJECT_IDS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          # The app's own configuration (passwords, client secrets, ...): written byte-for-byte on the
+          # VM and loaded by Compose with format: raw (see docker-compose.prod.yml and the template),
+          # so values may safely contain $, `, " etc. Must never go through Compose's own project .env,
+          # which is always variable-expanded -- see docker-compose.prod.yml's header comment.
+          SECRETS_FILE="$RUNNER_TEMP/planeweb.secrets.env"
+          {
+            echo "PlaneWeb__Auth__AdminEmail=$ADMIN_EMAIL"
+            echo "PlaneWeb__Auth__AdminPassword=$ADMIN_PASSWORD"
+            echo "PlaneWeb__Auth__LocalLogin=${LOCAL_LOGIN:-true}"
+            echo "PlaneWeb__Auth__Entra__TenantId=$ENTRA_TENANT_ID"
+            echo "PlaneWeb__Auth__Entra__ClientId=$ENTRA_CLIENT_ID"
+            echo "PlaneWeb__Auth__Entra__ClientSecret=$ENTRA_CLIENT_SECRET"
+            i=0
+            IFS=',' read -ra IDS <<< "$ENTRA_ADMIN_OBJECT_IDS"
+            for raw in "${IDS[@]}"; do
+              id=$(echo "$raw" | xargs)
+              if [ -n "$id" ]; then echo "PlaneWeb__Auth__Entra__AdminObjectIds__$i=$id"; i=$((i + 1)); fi
+            done
+          } > "$SECRETS_FILE"
+
+          SECRETS_B64=$(base64 -w0 < "$SECRETS_FILE")
+          COMPOSE_B64=$(base64 -w0 < docker-compose.prod.yml)
+          CADDY_B64=$(base64 -w0 < Caddyfile)
+          GHCR_TOKEN_B64=$(printf '%s' "$GHCR_TOKEN" | base64 -w0)
+          rm -f "$SECRETS_FILE"
+
+          SCRIPT="$RUNNER_TEMP/remote-script.sh"
+          cp infra/remote-setup.sh.template "$SCRIPT"
+          # PLANEWEB_IMAGE/PLANEWEB_HOST are not secrets (an image tag, an Azure DNS name) and are
+          # guaranteed free of quotes/backticks, so a direct substitution is safe. The rest are base64.
+          sed -i \
+            -e "s|__COMPOSE_B64__|$COMPOSE_B64|" \
+            -e "s|__CADDY_B64__|$CADDY_B64|" \
+            -e "s|__SECRETS_B64__|$SECRETS_B64|" \
+            -e "s|__PLANEWEB_IMAGE__|$PLANEWEB_IMAGE|" \
+            -e "s|__PLANEWEB_HOST__|$PLANEWEB_HOST|" \
+            -e "s|__GHCR_USERNAME__|$GHCR_USERNAME|" \
+            -e "s|__GHCR_TOKEN_B64__|$GHCR_TOKEN_B64|" \
+            "$SCRIPT"
+
+      - name: Run setup on the VM (Azure Run Command; no SSH involved)
+        run: |
+          out=$(az vm run-command invoke -g "${{ vars.AZURE_RESOURCE_GROUP }}" -n "${{ steps.infra.outputs.vmName }}" \
+            --command-id RunShellScript --scripts "@$RUNNER_TEMP/remote-script.sh" \
+            --query "value[0].message" -o tsv)
+          echo "$out"
+          rm -f "$RUNNER_TEMP/remote-script.sh"
+          echo "$out" | grep -q PLANEWEB_DEPLOY_OK
+
       - name: Smoke test
         run: |
-          url="${{ steps.deploy.outputs.url }}"
+          url="${{ steps.infra.outputs.url }}"
           for i in $(seq 1 40); do curl -fs "$url/healthz" && break; sleep 10; done
           curl -fs "$url/healthz"
           test "$(curl -s -o /dev/null -w '%{http_code}' "$url/settings")" = 302
-          rm -f "$RUNNER_TEMP/params.json"
-          echo "Deployed: $url  (Entra redirect URI: ${{ steps.deploy.outputs.entraRedirectUri }})"
+          echo "Deployed: $url  (Entra redirect URI: ${{ steps.infra.outputs.entraRedirectUri }})"

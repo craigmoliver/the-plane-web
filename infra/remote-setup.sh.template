@@ -1,0 +1,56 @@
+#!/bin/bash
+# Template for the one-shot VM setup script. Filled in by deploy.yml (sed substitution of the
+# __PLACEHOLDER__ tokens below) and run via Azure Run Command, which executes it on the VM over
+# the control plane -- no SSH port is involved.
+set -euo pipefail
+umask 077
+
+# The VM can report "provisioned" while cloud-init (infra/cloud-init.yaml) is still installing Docker
+# on first boot; wait for it to finish (success or failure) before trying to use docker/compose.
+if ! cloud-init status --wait >/dev/null; then
+  echo "cloud-init did not finish cleanly:"
+  cloud-init status --long || true
+  exit 1
+fi
+
+mkdir -p /opt/planeweb
+cd /opt/planeweb
+
+# Project .env: only non-secret values (Compose always expands $-sequences when loading this file,
+# so secrets must never go here). Persisted so later manual `docker compose ...` commands from this
+# directory also resolve ${PLANEWEB_IMAGE}/${PLANEWEB_HOST} without needing them re-exported.
+cat > .env <<ENVEOF
+PLANEWEB_IMAGE=__PLANEWEB_IMAGE__
+PLANEWEB_HOST=__PLANEWEB_HOST__
+ENVEOF
+
+# App configuration (passwords, client secrets, ...): written byte-for-byte, loaded by Compose with
+# format: raw (see docker-compose.prod.yml), so values may safely contain $, `, " etc.
+echo '__SECRETS_B64__' | base64 -d > secrets.env
+chmod 600 secrets.env .env
+
+echo '__COMPOSE_B64__' | base64 -d > docker-compose.yml
+echo '__CADDY_B64__' | base64 -d > Caddyfile
+
+GHCR_USERNAME='__GHCR_USERNAME__'
+GHCR_TOKEN_B64='__GHCR_TOKEN_B64__'
+if [ -n "$GHCR_USERNAME" ]; then
+  echo "$GHCR_TOKEN_B64" | base64 -d | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
+fi
+
+docker compose pull
+# --force-recreate: a Caddyfile-only change (bind-mounted, no image change) would otherwise leave the
+# running Caddy container serving its old config, since Compose doesn't detect bind-mount content changes.
+docker compose up -d --remove-orphans --force-recreate
+docker image prune -f
+# Every deploy uses a new commit-SHA image tag, so old tagged releases pile up on the OS disk (plain
+# `image prune` only removes untagged/dangling ones). Drop every tag of this image except the one just
+# deployed.
+PLANEWEB_IMAGE='__PLANEWEB_IMAGE__'
+REPO="${PLANEWEB_IMAGE%:*}"
+# Remove by repository:tag, not by image ID: an old and the just-deployed tag can share an ID (e.g. a
+# rebuild with no code changes), and `docker rmi` of a shared ID deletes every tag pointing to it.
+docker images "$REPO" --format '{{.Repository}}:{{.Tag}}' \
+  | awk -v keep="$PLANEWEB_IMAGE" '$0 != keep' | sort -u | xargs -r docker rmi -f || true
+
+echo PLANEWEB_DEPLOY_OK
