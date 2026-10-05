@@ -319,6 +319,22 @@ namespace PlaneWeb.Infrastructure.Data.Migrations.Postgres
                     b.ToTable("AspNetUsers", (string)null);
                 });
 
+            modelBuilder.Entity("PlaneWeb.Infrastructure.Data.AuthSeedState", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<bool>("GoogleAllowlistSeeded")
+                        .HasColumnType("boolean");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("AuthSeedState");
+                });
+
             modelBuilder.Entity("PlaneWeb.Infrastructure.Data.GoogleAllowedUser", b =>
                 {
                     b.Property<int>("Id")

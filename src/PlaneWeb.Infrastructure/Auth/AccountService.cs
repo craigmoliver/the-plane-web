@@ -236,10 +236,16 @@ public sealed class AccountService(UserManager<AppUser> users, RoleManager<Ident
         return (user, null);
     }
 
-    /// <summary>Seeds the Google allowlist from config on first run only; later changes happen via the admin UI.</summary>
+    /// <summary>
+    /// Seeds the Google allowlist from config on first run only; later changes, including removing every
+    /// row, happen via the admin UI and must never be reseeded on a later restart.
+    /// </summary>
     public static async Task EnsureGoogleAllowlistSeededAsync(PlaneWebDbContext db, GoogleOptions o, TimeProvider time)
     {
-        if (await db.GoogleAllowedUsers.AnyAsync()) return;
+        var state = await db.AuthSeedState.FirstOrDefaultAsync();
+        if (state is null) { state = new AuthSeedState(); db.AuthSeedState.Add(state); }
+        if (state.GoogleAllowlistSeeded) return;
+
         var now = time.GetUtcNow();
         var rows = o.AdminEmails.Select(e => (Email: e, Admin: true))
             .Concat(o.AllowedEmails.Select(e => (Email: e, Admin: false)))
@@ -247,16 +253,19 @@ public sealed class AccountService(UserManager<AppUser> users, RoleManager<Ident
             .GroupBy(x => x.Email.Trim().ToLowerInvariant())
             .Select(g => new GoogleAllowedUser { Email = g.Key, IsAdmin = g.Any(x => x.Admin), AddedBy = "seed", AddedAt = now });
         db.GoogleAllowedUsers.AddRange(rows);
+        state.GoogleAllowlistSeeded = true;
         await db.SaveChangesAsync();
     }
 
     /// <summary>
-    /// Applies an allowlist admin-flag change immediately to any account already linked to this email via
-    /// Google (normally admin is only (re-)applied at the next sign-in). Only touches accounts with an
-    /// existing Google login for this email — not every local account that happens to share it — and does
-    /// nothing to an account made admin through another source (e.g. Entra) when demoting here.
+    /// Grants admin immediately to any account already linked to this email via Google (normally admin is
+    /// only (re-)applied at the next sign-in). Only touches accounts with an existing Google login for this
+    /// email — not every local account that happens to share it. Never removes the role: role membership
+    /// alone can't tell a Google-sourced grant from one made on /admin/users or by Entra, so an automatic
+    /// demotion here could silently strip an unrelated grant. Removing admin is done on /admin/users, same
+    /// as Entra.
     /// </summary>
-    public async Task<IdentityResult> SetGoogleAdminAsync(string email, bool admin)
+    public async Task<IdentityResult> GrantGoogleAdminAsync(string email)
     {
         var normalized = users.NormalizeEmail(email);
         var candidates = await users.Users.Where(u => u.NormalizedEmail == normalized).ToListAsync();
@@ -264,8 +273,8 @@ public sealed class AccountService(UserManager<AppUser> users, RoleManager<Ident
         {
             var logins = await users.GetLoginsAsync(u);
             if (!logins.Any(l => l.LoginProvider == GoogleProvider)) continue;
-            if (admin == await users.IsInRoleAsync(u, Roles.Admin)) continue;
-            var r = admin ? await users.AddToRoleAsync(u, Roles.Admin) : await users.RemoveFromRoleAsync(u, Roles.Admin);
+            if (await users.IsInRoleAsync(u, Roles.Admin)) continue;
+            var r = await users.AddToRoleAsync(u, Roles.Admin);
             if (!r.Succeeded) return r;
             await users.UpdateSecurityStampAsync(u); // role change applies on next check (within RevalidateSeconds)
         }

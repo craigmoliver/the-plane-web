@@ -185,7 +185,7 @@ public class GoogleProvisioningTests
     }
 
     [Fact]
-    public async Task ToggleAdmin_AppliesImmediatelyToAlreadyLinkedAccount()
+    public async Task GrantGoogleAdmin_AppliesImmediatelyToAlreadyLinkedAccount()
     {
         using var db = new TestDb();
         var (sp, accounts, users, ctx) = Build(db);
@@ -194,18 +194,33 @@ public class GoogleProvisioningTests
         var (user, _) = await accounts.ProvisionGoogleAsync(new GoogleIdentity("sub-p", "promote@example.com", true, "P"), ctx);
         Assert.False(await users.IsInRoleAsync(user!, Roles.Admin));
 
-        var r1 = await accounts.SetGoogleAdminAsync("promote@example.com", admin: true);
-        Assert.True(r1.Succeeded);
+        var r = await accounts.GrantGoogleAdminAsync("promote@example.com");
+        Assert.True(r.Succeeded);
         Assert.True(await users.IsInRoleAsync(user!, Roles.Admin));
-
-        var r2 = await accounts.SetGoogleAdminAsync("promote@example.com", admin: false);
-        Assert.True(r2.Succeeded);
-        Assert.False(await users.IsInRoleAsync(user!, Roles.Admin));
         sp.Dispose();
     }
 
     [Fact]
-    public async Task ToggleAdmin_IgnoresAccountsWithoutAGoogleLogin()
+    public async Task GrantGoogleAdmin_NeverRemovesTheRole_SoAGrantFromAnotherSourceSurvives()
+    {
+        using var db = new TestDb();
+        var (sp, accounts, users, ctx) = Build(db);
+        await accounts.EnsureRolesAsync();
+        await AllowAsync(ctx, "already-admin@example.com");
+        var (user, _) = await accounts.ProvisionGoogleAsync(new GoogleIdentity("sub-a", "already-admin@example.com", true, "A"), ctx);
+        // Promoted independently, e.g. on /admin/users — not via the Google allowlist.
+        await users.AddToRoleAsync(user!, Roles.Admin);
+
+        // GrantGoogleAdminAsync has no "revoke" counterpart; the allowlist UI never calls it to demote,
+        // precisely because role membership alone can't tell this grant apart from a Google-sourced one.
+        var r = await accounts.GrantGoogleAdminAsync("already-admin@example.com");
+        Assert.True(r.Succeeded);
+        Assert.True(await users.IsInRoleAsync(user!, Roles.Admin)); // untouched
+        sp.Dispose();
+    }
+
+    [Fact]
+    public async Task GrantGoogleAdmin_IgnoresAccountsWithoutAGoogleLogin()
     {
         using var db = new TestDb();
         var (sp, accounts, users, ctx) = Build(db);
@@ -213,10 +228,30 @@ public class GoogleProvisioningTests
         // A local account sharing the email but never signed in with Google (not provisioned/linked yet).
         await accounts.CreateLocalAsync("untouched@example.com", "U", "a local password 1", admin: false);
 
-        var r = await accounts.SetGoogleAdminAsync("untouched@example.com", admin: true);
+        var r = await accounts.GrantGoogleAdminAsync("untouched@example.com");
         Assert.True(r.Succeeded);
         var local = await users.FindByNameAsync("untouched@example.com");
         Assert.False(await users.IsInRoleAsync(local!, Roles.Admin));
+        sp.Dispose();
+    }
+
+    [Fact]
+    public async Task Seeding_DoesNotRestoreAccessAfterAnAdminEmptiesTheAllowlist()
+    {
+        using var db = new TestDb();
+        var (sp, _, _, ctx) = Build(db);
+        var opts = new GoogleOptions { AdminEmails = ["admin@example.com"] };
+        await AccountService.EnsureGoogleAllowlistSeededAsync(ctx, opts, TimeProvider.System);
+        Assert.Equal(1, await ctx.GoogleAllowedUsers.CountAsync());
+
+        // An admin deliberately removes every row (e.g. to revoke access); a later restart must not
+        // reseed and silently restore it, even though the table is empty again.
+        ctx.GoogleAllowedUsers.RemoveRange(ctx.GoogleAllowedUsers);
+        await ctx.SaveChangesAsync();
+        Assert.Equal(0, await ctx.GoogleAllowedUsers.CountAsync());
+
+        await AccountService.EnsureGoogleAllowlistSeededAsync(ctx, opts, TimeProvider.System);
+        Assert.Equal(0, await ctx.GoogleAllowedUsers.CountAsync());
         sp.Dispose();
     }
 }

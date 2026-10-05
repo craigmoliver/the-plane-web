@@ -39,6 +39,17 @@ public sealed class GoogleAllowedUser
 }
 
 /// <summary>
+/// Single-row marker for one-time startup actions. Distinguishes "never seeded" from "seeded, then every
+/// row removed by an admin" — an empty <see cref="GoogleAllowedUser"/> table alone can't tell those apart,
+/// and re-seeding after an intentional removal would silently restore revoked (including admin) access.
+/// </summary>
+public sealed class AuthSeedState
+{
+    public int Id { get; set; }
+    public bool GoogleAllowlistSeeded { get; set; }
+}
+
+/// <summary>
 /// Shared model. Concrete subclasses exist per database provider so each has its own migrations
 /// (SQLite for the home server, PostgreSQL for Azure).
 /// </summary>
@@ -46,6 +57,7 @@ public abstract class PlaneWebDbContext(DbContextOptions options) : IdentityDbCo
 {
     public DbSet<WallSettings> Settings => Set<WallSettings>();
     public DbSet<GoogleAllowedUser> GoogleAllowedUsers => Set<GoogleAllowedUser>();
+    public DbSet<AuthSeedState> AuthSeedState => Set<AuthSeedState>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {

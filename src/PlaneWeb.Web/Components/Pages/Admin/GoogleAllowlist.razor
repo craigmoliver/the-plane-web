@@ -48,7 +48,7 @@
                         <td>@(r.IsAdmin ? "Admin" : "User")</td>
                         <td>@r.AddedAt.ToLocalTime().ToString("g")@(r.AddedBy is null ? "" : $" ({r.AddedBy})")</td>
                         <td><div class="actions">
-                            <button class="btn small" @onclick="() => ToggleAdminAsync(r)">@(r.IsAdmin ? "Remove admin" : "Make admin")</button>
+                            <button class="btn small" @onclick="() => ToggleAdminAsync(r)">@(r.IsAdmin ? "Unmark admin" : "Make admin")</button>
                             <button class="btn small danger" @onclick="() => RemoveAsync(r)">Remove</button>
                         </div></td>
                     </tr>
@@ -113,14 +113,22 @@
             await db.SaveChangesAsync();
             return true;
         });
-        // Apply immediately to anyone already signed in via Google with this email, rather than waiting
-        // for their next sign-in to pick up the new allowlist row.
-        await using (var scope = Scopes.CreateAsyncScope())
+        if (newAdminState)
         {
-            var result = await scope.ServiceProvider.GetRequiredService<AccountService>().SetGoogleAdminAsync(r.Email, newAdminState);
+            // Apply immediately to anyone already signed in via Google with this email, rather than
+            // waiting for their next sign-in to pick up the new allowlist row.
+            await using var scope = Scopes.CreateAsyncScope();
+            var result = await scope.ServiceProvider.GetRequiredService<AccountService>().GrantGoogleAdminAsync(r.Email);
             if (!result.Succeeded) { error = string.Join(" ", result.Errors.Select(e => e.Description)); return; }
+            notice = "Admin granted.";
         }
-        notice = newAdminState ? "Admin granted." : "Admin removed.";
+        else
+        {
+            // Only stops future Google sign-ins from (re-)granting admin; role membership has no record of
+            // which source granted it, so automatically revoking here could strip a grant made on
+            // /admin/users or by Entra. Remove the Admin role there if that's also wanted.
+            notice = "Removed from the Google admin list. Their existing Admin role (if any) is unchanged; use /admin/users to remove it.";
+        }
         await LoadAsync();
     }
 
