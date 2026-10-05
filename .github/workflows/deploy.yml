@@ -67,13 +67,9 @@ jobs:
       - name: Register Azure resource providers
         # Required once per subscription; can be run multiple times safely.
         # Using --wait ensures provider is fully registered before proceeding.
-        # This step may fail if the deployment identity lacks subscription-level permissions;
-        # that's OK — providers should already be registered by Azure admin during initial setup.
-        # If providers aren't registered, the Bicep deployment will fail with a clear error.
-        continue-on-error: true
         run: |
           for provider in Microsoft.Compute Microsoft.Network Microsoft.RecoveryServices; do
-            az provider register -n $provider --accept-terms --wait 2>&1 | grep -v "^WARNING:" || true
+            az provider register -n $provider --accept-terms --wait
           done
 
       - name: Prepare resource group
