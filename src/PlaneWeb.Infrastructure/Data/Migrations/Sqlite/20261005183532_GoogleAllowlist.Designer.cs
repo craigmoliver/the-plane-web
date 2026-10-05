@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using PlaneWeb.Infrastructure.Data;
 
@@ -10,9 +11,11 @@ using PlaneWeb.Infrastructure.Data;
 namespace PlaneWeb.Infrastructure.Data.Migrations.Sqlite
 {
     [DbContext(typeof(SqlitePlaneWebDbContext))]
-    partial class SqlitePlaneWebDbContextModelSnapshot : ModelSnapshot
+    [Migration("20261005183532_GoogleAllowlist")]
+    partial class GoogleAllowlist
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.12");

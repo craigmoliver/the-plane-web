@@ -3,11 +3,13 @@ using System.Security.Claims;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Google;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Components.Server;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using PlaneWeb.Infrastructure.Auth;
 using PlaneWeb.Infrastructure.Data;
@@ -67,6 +69,18 @@ public static class AuthSetup
                 o.Scope.Clear();
                 foreach (var s in new[] { "openid", "profile", "email" }) o.Scope.Add(s);
                 o.TokenValidationParameters.NameClaimType = "name";
+                o.SaveTokens = false;
+            });
+        }
+
+        if (auth.Google.Enabled)
+        {
+            services.AddAuthentication().AddGoogle(AccountService.GoogleProvider, "Google account", o =>
+            {
+                o.SignInScheme = IdentityConstants.ExternalScheme;
+                o.ClientId = auth.Google.ClientId!;
+                o.ClientSecret = auth.Google.ClientSecret!;
+                o.CallbackPath = "/signin-google";
                 o.SaveTokens = false;
             });
         }
@@ -144,7 +158,14 @@ public static class AuthSetup
         await using var scope = app.Services.CreateAsyncScope();
         var accounts = scope.ServiceProvider.GetRequiredService<AccountService>();
         await accounts.EnsureRolesAsync();
-        await accounts.EnsureBootstrapAdminAsync(scope.ServiceProvider.GetRequiredService<IOptions<AuthOptions>>().Value);
+        var authOptions = scope.ServiceProvider.GetRequiredService<IOptions<AuthOptions>>().Value;
+        await accounts.EnsureBootstrapAdminAsync(authOptions);
+        if (authOptions.Google.Enabled)
+        {
+            var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<PlaneWebDbContext>>();
+            await using var db = await factory.CreateDbContextAsync();
+            await AccountService.EnsureGoogleAllowlistSeededAsync(db, authOptions.Google, scope.ServiceProvider.GetRequiredService<TimeProvider>());
+        }
     }
 
     /// <summary>Sends users with a temporary password to the change-password page before anything else.</summary>
@@ -174,25 +195,40 @@ public static class AuthSetup
             return Results.LocalRedirect("/account/login");
         }).AllowAnonymous();
 
-        account.MapPost("/external", async (HttpContext ctx, IAntiforgery af, IOptions<AuthOptions> opt, string? returnUrl) =>
+        account.MapPost("/external", async (HttpContext ctx, IAntiforgery af, IOptions<AuthOptions> opt, string provider, string? returnUrl) =>
         {
             if (!await af.IsRequestValidAsync(ctx)) return PlainBadRequest(ctx);
-            if (!opt.Value.Entra.Enabled) return Results.NotFound();
+            if (!IsEnabledProvider(provider, opt.Value)) return Results.NotFound();
             var props = new AuthenticationProperties
             {
-                RedirectUri = $"/account/external-callback?returnUrl={Uri.EscapeDataString(SafeReturnUrl(returnUrl))}",
+                RedirectUri = $"/account/external-callback?provider={Uri.EscapeDataString(provider)}&returnUrl={Uri.EscapeDataString(SafeReturnUrl(returnUrl))}",
             };
-            return Results.Challenge(props, [AccountService.EntraProvider]);
+            return Results.Challenge(props, [provider]);
         }).AllowAnonymous().RequireRateLimiting(LoginRateLimit);
 
-        account.MapGet("/external-callback", async (HttpContext ctx, string? returnUrl, AccountService accounts,
-            SignInManager<AppUser> signIn, IOptions<AuthOptions> opt) =>
+        account.MapGet("/external-callback", async (HttpContext ctx, string provider, string? returnUrl, AccountService accounts,
+            SignInManager<AppUser> signIn, IOptions<AuthOptions> opt, IDbContextFactory<PlaneWebDbContext> dbFactory) =>
         {
+            if (!IsEnabledProvider(provider, opt.Value))
+                return Results.LocalRedirect("/account/login?error=" + Uri.EscapeDataString("Sign-in refused."));
             var result = await ctx.AuthenticateAsync(IdentityConstants.ExternalScheme);
             await ctx.SignOutAsync(IdentityConstants.ExternalScheme);
-            if (!result.Succeeded || ExternalIdentity.FromPrincipal(result.Principal) is not { } id)
-                return Results.LocalRedirect("/account/login?error=" + Uri.EscapeDataString("Microsoft sign-in failed."));
-            var (user, error) = await accounts.ProvisionExternalAsync(id, opt.Value.Entra);
+            if (!result.Succeeded) return Results.LocalRedirect("/account/login?error=" + Uri.EscapeDataString("Sign-in failed."));
+
+            AppUser? user; string? error;
+            if (provider == AccountService.EntraProvider)
+            {
+                if (ExternalIdentity.FromPrincipal(result.Principal) is not { } id)
+                    return Results.LocalRedirect("/account/login?error=" + Uri.EscapeDataString("Microsoft sign-in failed."));
+                (user, error) = await accounts.ProvisionExternalAsync(id, opt.Value.Entra);
+            }
+            else
+            {
+                if (GoogleIdentity.FromPrincipal(result.Principal) is not { } id)
+                    return Results.LocalRedirect("/account/login?error=" + Uri.EscapeDataString("Google sign-in failed."));
+                await using var db = await dbFactory.CreateDbContextAsync();
+                (user, error) = await accounts.ProvisionGoogleAsync(id, db);
+            }
             if (user is null)
                 return Results.LocalRedirect("/account/login?error=" + Uri.EscapeDataString(error ?? "Sign-in refused."));
             await signIn.SignInAsync(user, isPersistent: true);
@@ -200,6 +236,10 @@ public static class AuthSetup
             return Results.LocalRedirect(SafeReturnUrl(returnUrl));
         }).AllowAnonymous().RequireRateLimiting(LoginRateLimit);
     }
+
+    private static bool IsEnabledProvider(string provider, AuthOptions o) =>
+        (provider == AccountService.EntraProvider && o.Entra.Enabled) ||
+        (provider == AccountService.GoogleProvider && o.Google.Enabled);
 
     /// <summary>400 without the friendly error page (which would re-run this POST as a page request).</summary>
     private static IResult PlainBadRequest(HttpContext ctx)

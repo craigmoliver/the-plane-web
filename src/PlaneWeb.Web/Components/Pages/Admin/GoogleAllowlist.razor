@@ -1,0 +1,133 @@
+@page "/admin/google-allowlist"
+@attribute [Authorize(Policy = AuthSetup.AdminPolicy)]
+@using Microsoft.AspNetCore.Identity
+@using Microsoft.EntityFrameworkCore
+@using Microsoft.Extensions.Options
+@using PlaneWeb.Infrastructure.Auth
+@using PlaneWeb.Infrastructure.Data
+@inject IServiceScopeFactory Scopes
+@inject IOptions<AuthOptions> AuthOpts
+@inject TimeProvider Time
+
+<PageTitle>Google allowlist · The Plane Web</PageTitle>
+
+<div class="settings">
+    <header class="settings-header">
+        <h1>Google allowlist</h1>
+        <nav><a href="/admin/users" class="btn">Users</a><a href="/settings" class="btn">Settings</a><a href="/wall" class="btn primary">Open Wall ▶</a></nav>
+    </header>
+
+    @if (!AuthOpts.Value.Google.Enabled)
+    {
+        <p class="hint">Google sign-in is not configured (set <code>PlaneWeb__Auth__Google__ClientId</code> and <code>__ClientSecret</code>).</p>
+    }
+
+    <p class="hint">Only the emails listed here may sign in with Google. If an email matches exactly one existing local
+        account, that account is linked automatically on first Google sign-in.</p>
+
+    @if (notice is not null) { <p class="status" role="status">@notice</p> }
+    @if (error is not null) { <p class="error" role="alert">@error</p> }
+
+    <section class="panel">
+        <h2>Add email</h2>
+        <form class="row" @onsubmit="AddAsync" @onsubmit:preventDefault>
+            <label>Email <input type="email" @bind="newEmail" required /></label>
+            <label class="check"><input type="checkbox" @bind="newAdmin" /> Admin</label>
+            <button class="btn primary" type="submit">Add</button>
+        </form>
+    </section>
+
+    <section class="panel">
+        <table class="users">
+            <thead><tr><th>Email</th><th>Role</th><th>Added</th><th></th></tr></thead>
+            <tbody>
+                @foreach (var r in rows)
+                {
+                    <tr @key="r.Id">
+                        <td>@r.Email</td>
+                        <td>@(r.IsAdmin ? "Admin" : "User")</td>
+                        <td>@r.AddedAt.ToLocalTime().ToString("g")@(r.AddedBy is null ? "" : $" ({r.AddedBy})")</td>
+                        <td><div class="actions">
+                            <button class="btn small" @onclick="() => ToggleAdminAsync(r)">@(r.IsAdmin ? "Remove admin" : "Make admin")</button>
+                            <button class="btn small danger" @onclick="() => RemoveAsync(r)">Remove</button>
+                        </div></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </section>
+</div>
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState> AuthState { get; set; } = default!;
+    private List<GoogleAllowedUser> rows = [];
+    private string? notice, error, newEmail;
+    private bool newAdmin;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task<T> WithDb<T>(Func<PlaneWebDbContext, Task<T>> f)
+    {
+        await using var scope = Scopes.CreateAsyncScope();
+        var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<PlaneWebDbContext>>();
+        await using var db = await factory.CreateDbContextAsync();
+        return await f(db);
+    }
+
+    private async Task LoadAsync() => rows = await WithDb(db =>
+        db.GoogleAllowedUsers.AsNoTracking().OrderBy(x => x.Email).ToListAsync());
+
+    private async Task AddAsync()
+    {
+        notice = error = null;
+        if (string.IsNullOrWhiteSpace(newEmail)) return;
+        var email = newEmail.Trim().ToLowerInvariant();
+        var admin = newAdmin;
+        var myEmail = (await AuthState).User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value
+            ?? (await AuthState).User.Identity?.Name;
+        var ok = await WithDb(async db =>
+        {
+            if (await db.GoogleAllowedUsers.AnyAsync(x => x.Email == email)) return false;
+            db.GoogleAllowedUsers.Add(new GoogleAllowedUser
+            {
+                Email = email, IsAdmin = admin, AddedBy = myEmail, AddedAt = Time.GetUtcNow(),
+            });
+            await db.SaveChangesAsync();
+            return true;
+        });
+        if (!ok) { error = $"{email} is already on the list."; return; }
+        notice = $"Added {email}.";
+        newEmail = null; newAdmin = false;
+        await LoadAsync();
+    }
+
+    private async Task ToggleAdminAsync(GoogleAllowedUser r)
+    {
+        notice = error = null;
+        await WithDb(async db =>
+        {
+            var row = await db.GoogleAllowedUsers.FindAsync(r.Id);
+            if (row is null) return false;
+            row.IsAdmin = !row.IsAdmin;
+            await db.SaveChangesAsync();
+            return true;
+        });
+        notice = r.IsAdmin ? "Admin removed." : "Admin granted.";
+        await LoadAsync();
+    }
+
+    private async Task RemoveAsync(GoogleAllowedUser r)
+    {
+        notice = error = null;
+        await WithDb(async db =>
+        {
+            var row = await db.GoogleAllowedUsers.FindAsync(r.Id);
+            if (row is null) return false;
+            db.GoogleAllowedUsers.Remove(row);
+            await db.SaveChangesAsync();
+            return true;
+        });
+        notice = $"Removed {r.Email}.";
+        await LoadAsync();
+    }
+}

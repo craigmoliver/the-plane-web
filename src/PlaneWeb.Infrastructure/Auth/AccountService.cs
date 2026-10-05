@@ -16,6 +16,7 @@ public sealed class AuthOptions
     public string? AdminEmail { get; set; }
     public string? AdminPassword { get; set; }
     public EntraOptions Entra { get; set; } = new();
+    public GoogleOptions Google { get; set; } = new();
 }
 
 /// <summary>Microsoft Entra ID (work account) sign-in. Enabled when TenantId and ClientId are set.</summary>
@@ -31,6 +32,22 @@ public sealed class EntraOptions
     /// </summary>
     public List<string> AdminObjectIds { get; set; } = [];
     public bool Enabled => !string.IsNullOrWhiteSpace(TenantId) && !string.IsNullOrWhiteSpace(ClientId);
+}
+
+/// <summary>
+/// Google sign-in. Enabled when ClientId and ClientSecret are set. Who may sign in is controlled by
+/// <see cref="GoogleAllowedUser"/> rows in the database (seeded once from AllowedEmails/AdminEmails below
+/// if the table is empty), not by config — so access can be changed on /admin/google-allowlist without a redeploy.
+/// </summary>
+public sealed class GoogleOptions
+{
+    public string? ClientId { get; set; }
+    public string? ClientSecret { get; set; }
+    /// <summary>Seeds the allowlist on first run only. Granted admin.</summary>
+    public List<string> AdminEmails { get; set; } = [];
+    /// <summary>Seeds the allowlist on first run only. Not granted admin.</summary>
+    public List<string> AllowedEmails { get; set; } = [];
+    public bool Enabled => !string.IsNullOrWhiteSpace(ClientId) && !string.IsNullOrWhiteSpace(ClientSecret);
 }
 
 /// <summary>Identity details taken from a Microsoft sign-in.</summary>
@@ -52,9 +69,24 @@ public sealed record ExternalIdentity(string ObjectId, string TenantId, string? 
     }
 }
 
+/// <summary>Identity details taken from a Google sign-in.</summary>
+public sealed record GoogleIdentity(string Subject, string? Email, bool EmailVerified, string? Name)
+{
+    public static GoogleIdentity? FromPrincipal(ClaimsPrincipal p)
+    {
+        var sub = p.FindFirst("sub")?.Value ?? p.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (sub is null) return null;
+        var email = p.FindFirst(ClaimTypes.Email)?.Value ?? p.FindFirst("email")?.Value;
+        var verified = bool.TryParse(p.FindFirst("email_verified")?.Value, out var v) && v;
+        var name = p.FindFirst("name")?.Value ?? p.FindFirst(ClaimTypes.Name)?.Value;
+        return new GoogleIdentity(sub, email, verified, name);
+    }
+}
+
 public sealed class AccountService(UserManager<AppUser> users, RoleManager<IdentityRole> roles, TimeProvider time, ILogger<AccountService> log)
 {
     public const string EntraProvider = "Microsoft";
+    public const string GoogleProvider = "Google";
 
     /// <summary>Password and lockout policy, shared by the app and tests.</summary>
     public static void ConfigureIdentity(IdentityOptions o)
@@ -144,6 +176,76 @@ public sealed class AccountService(UserManager<AppUser> users, RoleManager<Ident
     }
 
     public static string ExternalUserName(string objectId) => $"entra-{objectId.ToLowerInvariant()}";
+
+    public static string GoogleUserName(string subject) => $"google-{subject}";
+
+    /// <summary>
+    /// Finds or creates the account for a Google sign-in, linking by email to an existing local account
+    /// when there's exactly one match. Refused when the email isn't verified, isn't on the allowlist,
+    /// matches more than one local account, or the matched/found account is disabled.
+    /// </summary>
+    public async Task<(AppUser? User, string? Error)> ProvisionGoogleAsync(GoogleIdentity id, PlaneWebDbContext db)
+    {
+        if (!id.EmailVerified || string.IsNullOrWhiteSpace(id.Email))
+            return (null, "Your Google account's email must be verified.");
+
+        var email = id.Email.Trim();
+        var allowed = await db.GoogleAllowedUsers.AsNoTracking()
+            .FirstOrDefaultAsync(a => a.Email == email.ToLowerInvariant());
+        if (allowed is null) return (null, "This Google account is not allowed to sign in here. Ask an admin to add it.");
+
+        var userName = GoogleUserName(id.Subject);
+        var user = await users.FindByLoginAsync(GoogleProvider, id.Subject);
+        if (user is null)
+        {
+            var locals = await users.Users.Where(u => u.Email == email).ToListAsync();
+            if (locals.Count > 1)
+                return (null, $"Several accounts use {email}; ask an admin to link the right one first.");
+
+            if (locals.Count == 1)
+            {
+                user = locals[0];
+                var r = await users.AddLoginAsync(user, new UserLoginInfo(GoogleProvider, id.Subject, "Google"));
+                if (!r.Succeeded) return (null, string.Join("; ", r.Errors.Select(e => e.Description)));
+                log.LogInformation("Linked Google sign-in to existing account {Email}", email);
+            }
+            else
+            {
+                user = new AppUser
+                {
+                    UserName = userName, Email = email, EmailConfirmed = true, DisplayName = id.Name,
+                    IsExternal = true, CreatedAt = time.GetUtcNow(), LockoutEnabled = true,
+                };
+                var r = await users.CreateAsync(user);
+                if (r.Succeeded) r = await users.AddLoginAsync(user, new UserLoginInfo(GoogleProvider, id.Subject, "Google"));
+                if (r.Succeeded) r = await users.AddToRoleAsync(user, Roles.User);
+                if (!r.Succeeded) return (null, string.Join("; ", r.Errors.Select(e => e.Description)));
+                log.LogInformation("Provisioned Google account {Email}", email);
+            }
+        }
+
+        if (await users.IsLockedOutAsync(user)) return (null, "This account has been disabled.");
+
+        if (id.Name is not null && user.DisplayName != id.Name) user.DisplayName = id.Name;
+        await users.UpdateAsync(user);
+
+        if (allowed.IsAdmin && !await users.IsInRoleAsync(user, Roles.Admin)) await users.AddToRoleAsync(user, Roles.Admin);
+        return (user, null);
+    }
+
+    /// <summary>Seeds the Google allowlist from config on first run only; later changes happen via the admin UI.</summary>
+    public static async Task EnsureGoogleAllowlistSeededAsync(PlaneWebDbContext db, GoogleOptions o, TimeProvider time)
+    {
+        if (await db.GoogleAllowedUsers.AnyAsync()) return;
+        var now = time.GetUtcNow();
+        var rows = o.AdminEmails.Select(e => (Email: e, Admin: true))
+            .Concat(o.AllowedEmails.Select(e => (Email: e, Admin: false)))
+            .Where(x => !string.IsNullOrWhiteSpace(x.Email))
+            .GroupBy(x => x.Email.Trim().ToLowerInvariant())
+            .Select(g => new GoogleAllowedUser { Email = g.Key, IsAdmin = g.Any(x => x.Admin), AddedBy = "seed", AddedAt = now });
+        db.GoogleAllowedUsers.AddRange(rows);
+        await db.SaveChangesAsync();
+    }
 
     public async Task RecordSignInAsync(AppUser u)
     {

@@ -1,4 +1,7 @@
 @* Signed-in user's name with password and sign-out actions; used in page headers/footers. *@
+@using Microsoft.Extensions.Options
+@using PlaneWeb.Infrastructure.Auth
+@inject IOptions<AuthOptions> AuthOpts
 <AuthorizeView>
     <span class="user-menu">
         <span class="user-name" title="@context.User.Identity?.Name">@(context.User.FindFirst("display_name")?.Value ?? context.User.Identity?.Name)</span>
@@ -6,7 +9,13 @@
         {
             <a href="/account/change-password" data-enhance-nav="false">Password</a>
         }
-        <AuthorizeView Policy="@AuthSetup.AdminPolicy" Context="admin"><a href="/admin/users">Users</a></AuthorizeView>
+        <AuthorizeView Policy="@AuthSetup.AdminPolicy" Context="admin">
+            <a href="/admin/users">Users</a>
+            @if (AuthOpts.Value.Google.Enabled)
+            {
+                <a href="/admin/google-allowlist">Google allowlist</a>
+            }
+        </AuthorizeView>
         <form method="post" action="/account/logout" class="inline-form">
             <AntiforgeryToken />
             <button type="submit" class="link-button">Sign out</button>

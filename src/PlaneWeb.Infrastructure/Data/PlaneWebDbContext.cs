@@ -26,16 +26,34 @@ public static class Roles
 }
 
 /// <summary>
+/// An email allowed to sign in with Google, managed on <c>/admin/google-allowlist</c>. Seeded once from
+/// <c>PlaneWeb:Auth:Google</c> config on first startup; changes after that only happen here.
+/// </summary>
+public sealed class GoogleAllowedUser
+{
+    public int Id { get; set; }
+    public required string Email { get; set; }
+    public bool IsAdmin { get; set; }
+    public string? AddedBy { get; set; }
+    public DateTimeOffset AddedAt { get; set; }
+}
+
+/// <summary>
 /// Shared model. Concrete subclasses exist per database provider so each has its own migrations
 /// (SQLite for the home server, PostgreSQL for Azure).
 /// </summary>
 public abstract class PlaneWebDbContext(DbContextOptions options) : IdentityDbContext<AppUser>(options)
 {
     public DbSet<WallSettings> Settings => Set<WallSettings>();
+    public DbSet<GoogleAllowedUser> GoogleAllowedUsers => Set<GoogleAllowedUser>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
         base.OnModelCreating(b);
+        var g = b.Entity<GoogleAllowedUser>();
+        g.HasIndex(x => x.Email).IsUnique();
+        g.Property(x => x.Email).HasMaxLength(320);
+
         var e = b.Entity<WallSettings>();
         e.HasKey(x => x.Id);
         e.Property(x => x.Id).ValueGeneratedOnAdd();
