@@ -82,8 +82,7 @@ public static class AuthSetup
                 o.ClientSecret = auth.Google.ClientSecret!;
                 o.CallbackPath = "/signin-google";
                 o.SaveTokens = false;
-                // Not mapped by default; GoogleIdentity.FromPrincipal reads "email_verified" to refuse unverified emails.
-                o.ClaimActions.MapJsonKey("email_verified", "verified_email", System.Security.Claims.ClaimValueTypes.Boolean);
+                ConfigureGoogleClaimActions(o);
             });
         }
 
@@ -143,6 +142,16 @@ public static class AuthSetup
     /// <summary>How often sessions are re-checked against the database (default 60 s; tests use 0).</summary>
     public static TimeSpan RevalidateInterval(IConfiguration c) =>
         TimeSpan.FromSeconds(Math.Clamp(c.GetValue("PlaneWeb:Auth:RevalidateSeconds", 60), 0, 3600));
+
+    /// <summary>
+    /// Not mapped by default. The default <see cref="GoogleOptions.UserInformationEndpoint"/> is the v3
+    /// (OIDC-compliant) endpoint, whose JSON field is "email_verified" — the older v2 endpoint instead used
+    /// "verified_email"; mapping that name here would leave the claim always unpopulated. Extracted so a
+    /// test can exercise the actual configured mapping against a sample userinfo payload without a live
+    /// OAuth round trip (see AuthSetupTests).
+    /// </summary>
+    public static void ConfigureGoogleClaimActions(Microsoft.AspNetCore.Authentication.Google.GoogleOptions o) =>
+        o.ClaimActions.MapJsonKey("email_verified", "email_verified", System.Security.Claims.ClaimValueTypes.Boolean);
 
     private static Task ApiAware(RedirectContext<Microsoft.AspNetCore.Authentication.Cookies.CookieAuthenticationOptions> ctx, int status)
     {
