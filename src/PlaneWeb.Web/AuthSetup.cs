@@ -82,8 +82,10 @@ public static class AuthSetup
                 o.ClientSecret = auth.Google.ClientSecret!;
                 o.CallbackPath = "/signin-google";
                 o.SaveTokens = false;
-                // Not mapped by default; GoogleIdentity.FromPrincipal reads "email_verified" to refuse unverified emails.
-                o.ClaimActions.MapJsonKey("email_verified", "verified_email", System.Security.Claims.ClaimValueTypes.Boolean);
+                // Not mapped by default. The default UserInformationEndpoint is the v3 (OIDC-compliant)
+                // endpoint, whose JSON field is "email_verified" (the older v2 endpoint instead used
+                // "verified_email" — mapping that name here would leave the claim always unpopulated).
+                o.ClaimActions.MapJsonKey("email_verified", "email_verified", System.Security.Claims.ClaimValueTypes.Boolean);
             });
         }
 
