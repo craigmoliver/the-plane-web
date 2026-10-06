@@ -156,6 +156,10 @@ jobs:
           ENTRA_CLIENT_ID: ${{ vars.ENTRA_CLIENT_ID }}
           ENTRA_CLIENT_SECRET: ${{ secrets.ENTRA_CLIENT_SECRET }}
           ENTRA_ADMIN_OBJECT_IDS: ${{ vars.ENTRA_ADMIN_OBJECT_IDS }}
+          GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_ADMIN_EMAILS: ${{ vars.GOOGLE_ADMIN_EMAILS }}
+          GOOGLE_ALLOWED_EMAILS: ${{ vars.GOOGLE_ALLOWED_EMAILS }}
         run: |
           set -euo pipefail
           umask 077
@@ -176,6 +180,20 @@ jobs:
             for raw in "${IDS[@]}"; do
               id=$(echo "$raw" | xargs)
               if [ -n "$id" ]; then echo "PlaneWeb__Auth__Entra__AdminObjectIds__$i=$id"; i=$((i + 1)); fi
+            done
+            echo "PlaneWeb__Auth__Google__ClientId=$GOOGLE_CLIENT_ID"
+            echo "PlaneWeb__Auth__Google__ClientSecret=$GOOGLE_CLIENT_SECRET"
+            i=0
+            IFS=',' read -ra ADMINS <<< "$GOOGLE_ADMIN_EMAILS"
+            for raw in "${ADMINS[@]}"; do
+              email=$(echo "$raw" | xargs)
+              if [ -n "$email" ]; then echo "PlaneWeb__Auth__Google__AdminEmails__$i=$email"; i=$((i + 1)); fi
+            done
+            i=0
+            IFS=',' read -ra ALLOWED <<< "$GOOGLE_ALLOWED_EMAILS"
+            for raw in "${ALLOWED[@]}"; do
+              email=$(echo "$raw" | xargs)
+              if [ -n "$email" ]; then echo "PlaneWeb__Auth__Google__AllowedEmails__$i=$email"; i=$((i + 1)); fi
             done
           } > "$SECRETS_FILE"
 
@@ -214,4 +232,4 @@ jobs:
           for i in $(seq 1 40); do curl -fs "$url/healthz" && break; sleep 10; done
           curl -fs "$url/healthz"
           test "$(curl -s -o /dev/null -w '%{http_code}' "$url/settings")" = 302
-          echo "Deployed: $url  (Entra redirect URI: ${{ steps.infra.outputs.entraRedirectUri }})"
+          echo "Deployed: $url  (Entra redirect URI: ${{ steps.infra.outputs.entraRedirectUri }}, Google redirect URI: ${{ steps.infra.outputs.googleRedirectUri }})"

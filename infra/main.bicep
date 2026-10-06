@@ -190,4 +190,5 @@ resource protectedItem 'Microsoft.RecoveryServices/vaults/backupFabrics/protecti
 output url string = 'https://${pip.properties.dnsSettings.fqdn}'
 output host string = pip.properties.dnsSettings.fqdn
 output entraRedirectUri string = 'https://${pip.properties.dnsSettings.fqdn}/signin-oidc'
+output googleRedirectUri string = 'https://${pip.properties.dnsSettings.fqdn}/signin-google'
 output vmName string = vm.name

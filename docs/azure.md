@@ -95,15 +95,18 @@ Create an environment named **production**. Under **Deployment branches and tags
 | `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID` | work-account sign-in, see docs/entra.md |
 | `LOCAL_LOGIN` | `false` for work accounts only (default `true`) |
 | `ENTRA_ADMIN_OBJECT_IDS` | comma-separated Entra object IDs made admin (yours, at least, unless you use the Entra `Admin` app role or set both `ADMIN_EMAIL` and `ADMIN_PASSWORD`) |
+| `GOOGLE_CLIENT_ID` | Google sign-in, see docs/google.md |
+| `GOOGLE_ADMIN_EMAILS`, `GOOGLE_ALLOWED_EMAILS` | comma-separated emails; seeds the allowlist once on first run only (manage later on `/admin/google-allowlist`) |
 
 | Secrets | |
 |---|---|
 | `ADMIN_PASSWORD` | bootstrap admin password |
 | `ENTRA_CLIENT_SECRET` | from the Entra app registration |
+| `GOOGLE_CLIENT_SECRET` | from the Google OAuth client |
 | `GHCR_USERNAME`, `GHCR_TOKEN` | GitHub user + PAT with `read:packages` (the VM pulls the private image). Or make the package public and leave these empty. |
 
-Then run **Actions → Deploy to Azure → Run workflow**. The run summary prints the URL and the Entra redirect URI;
-add that redirect URI to the Entra app registration (docs/entra.md).
+Then run **Actions → Deploy to Azure → Run workflow**. The run summary prints the URL and the Entra/Google redirect URIs;
+add the Entra one to the Entra app registration (docs/entra.md) and the Google one to the Google OAuth client (docs/google.md).
 
 ## Deploying with a company (CapTech) account
 Hosting (this subscription) and sign-in (which directory's accounts are accepted) are independent: you

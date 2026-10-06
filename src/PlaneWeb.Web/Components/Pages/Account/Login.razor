@@ -23,20 +23,29 @@
 
         @if (AuthOpts.Value.Entra.Enabled)
         {
-            <form method="post" action="/account/external?returnUrl=@Uri.EscapeDataString(AuthSetup.SafeReturnUrl(ReturnUrl))">
+            <form method="post" action="/account/external?provider=Microsoft&returnUrl=@Uri.EscapeDataString(AuthSetup.SafeReturnUrl(ReturnUrl))">
                 <AntiforgeryToken />
                 <button class="btn primary wide" type="submit">Sign in with your work account</button>
             </form>
         }
 
-        @if (AuthOpts.Value.LocalLogin)
+        @if (AuthOpts.Value.Google.Enabled)
         {
             @if (AuthOpts.Value.Entra.Enabled) { <div class="or"><span>or</span></div> }
+            <form method="post" action="/account/external?provider=Google&returnUrl=@Uri.EscapeDataString(AuthSetup.SafeReturnUrl(ReturnUrl))">
+                <AntiforgeryToken />
+                <button class="btn primary wide" type="submit">Sign in with Google</button>
+            </form>
+        }
+
+        @if (AuthOpts.Value.LocalLogin)
+        {
+            @if (AuthOpts.Value.Entra.Enabled || AuthOpts.Value.Google.Enabled) { <div class="or"><span>or</span></div> }
             <EditForm Model="Input" FormName="login" OnValidSubmit="LoginAsync" method="post">
                 <label>Email <input name="Input.Email" type="email" autocomplete="username" required @bind-value="Input.Email" /></label>
                 <label>Password <input name="Input.Password" type="password" autocomplete="current-password" required @bind-value="Input.Password" /></label>
                 <label class="check"><input name="Input.Remember" type="checkbox" value="true" checked="@Input.Remember" /> Keep me signed in for 30 days (for wall displays)</label>
-                <button class="btn @(AuthOpts.Value.Entra.Enabled ? "" : "primary") wide" type="submit">Sign in</button>
+                <button class="btn @(AuthOpts.Value.Entra.Enabled || AuthOpts.Value.Google.Enabled ? "" : "primary") wide" type="submit">Sign in</button>
             </EditForm>
         }
     </div>
