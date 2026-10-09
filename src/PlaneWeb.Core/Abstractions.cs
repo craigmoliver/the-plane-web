@@ -1,5 +1,16 @@
 namespace PlaneWeb.Core;
 
+/// <summary>Geocoded city result.</summary>
+public record CityResult(string Name, string? Region, string? Country, double Lat, double Lon)
+{
+    public string Label => $"{Name}, {Region ?? Country ?? "Unknown"}";
+}
+
+public interface ICityGeocoder
+{
+    Task<IReadOnlyList<CityResult>> SearchAsync(string query, CancellationToken ct);
+}
+
 public interface IFlightDataProvider
 {
     string Name { get; }
