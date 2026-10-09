@@ -4,6 +4,7 @@
 @using System.Text.Json
 @inherits UserFeedComponent
 @inject IJSRuntime JS
+@inject ICityGeocoder CityGeocoder
 
 <PageTitle>Settings · The Plane Web</PageTitle>
 
@@ -43,6 +44,21 @@
                     <div class="row">
                         <label>Latitude <input type="number" step="0.0001" @bind="s.CenterLat" @bind:after="UpdateMap" /></label>
                         <label>Longitude <input type="number" step="0.0001" @bind="s.CenterLon" @bind:after="UpdateMap" /></label>
+                    </div>
+                    <div class="row">
+                        <label>
+                            Search city
+                            <input type="text" @bind="cityQuery" @oninput="OnCityQueryChanged" @onblur="OnCityBlur" @onkeydown="OnCityKeyDown" autocomplete="off" />
+                            @if (cityMatches?.Count > 0)
+                            {
+                                <div class="city-dropdown">
+                                    @foreach (var match in cityMatches)
+                                    {
+                                        <button type="button" class="city-option" @onclick="() => PickCity(match)">@match.Label</button>
+                                    }
+                                </div>
+                            }
+                        </label>
                     </div>
                     <button class="btn" @onclick="UseMyLocation">📍 Use my location</button>
                     @if (s.Shape == AreaShape.Radius)
@@ -89,6 +105,21 @@
                         }
                     }
                     <label>Reference location (for distance)</label>
+                    <div class="row">
+                        <label>
+                            Search city
+                            <input type="text" @bind="cityQuery" @oninput="OnCityQueryChanged" @onblur="OnCityBlur" @onkeydown="OnCityKeyDown" autocomplete="off" />
+                            @if (cityMatches?.Count > 0)
+                            {
+                                <div class="city-dropdown">
+                                    @foreach (var match in cityMatches)
+                                    {
+                                        <button type="button" class="city-option" @onclick="() => PickCity(match)">@match.Label</button>
+                                    }
+                                </div>
+                            }
+                        </label>
+                    </div>
                     <div class="row">
                         <label>Latitude <input type="number" step="0.0001" @bind="s.CenterLat" /></label>
                         <label>Longitude <input type="number" step="0.0001" @bind="s.CenterLon" /></label>
@@ -164,6 +195,9 @@
     private string? status;
     private string? validationError;
     private string liveSummary = "";
+    private string cityQuery = "";
+    private IReadOnlyList<CityResult>? cityMatches;
+    private bool showingCityMatches = false;
 
     protected override async Task OnInitializedAsync()
     {
@@ -192,6 +226,54 @@
     private async Task UpdateMap()
     {
         if (mapReady) await JS.InvokeVoidAsync("planeWebMap.update", MapState(), false);
+    }
+
+    private async Task OnCityQueryChanged(ChangeEventArgs e)
+    {
+        var query = (e.Value?.ToString() ?? "").Trim();
+        cityMatches = null;
+        showingCityMatches = false;
+
+        // Debounce the request
+        if (!string.IsNullOrEmpty(query) && query.Length >= 2)
+        {
+            var canceller = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+            try
+            {
+                cityMatches = await CityGeocoder.SearchAsync(query, canceller.Token);
+                showingCityMatches = true;
+                StateHasChanged();
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected when search is cancelled due to new typing
+            }
+        }
+    }
+
+    private void OnCityBlur(FocusEventArgs e)
+    {
+        // Delay closing the dropdown slightly to allow for click events
+        Task.Delay(100).ContinueWith(_ => showingCityMatches = false);
+    }
+
+    private void OnCityKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape")
+        {
+            showingCityMatches = false;
+            cityQuery = "";
+        }
+    }
+
+    private void PickCity(CityResult result)
+    {
+        s!.CenterLat = Math.Round(result.Lat, 5);
+        s.CenterLon = Math.Round(result.Lon, 5);
+        cityQuery = "";
+        cityMatches = null;
+        showingCityMatches = false;
+        UpdateMap();
     }
 
     [JSInvokable]
