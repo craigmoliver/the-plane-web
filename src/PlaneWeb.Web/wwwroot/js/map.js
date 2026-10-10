@@ -58,6 +58,17 @@ window.planeWebMap = (() => {
         }
     }
 
+    // Recenter on a picked location (works for radius and polygon modes; keeps the current zoom unless the
+    // radius circle would not fit, in which case it fits the circle).
+    function centerOn(lat, lon, radiusNm) {
+        if (!map) return;
+        if (radiusNm > 0) {
+            map.fitBounds(L.circle([lat, lon], { radius: radiusNm * 1852 }).getBounds(), { padding: [20, 20] });
+        } else {
+            map.setView([lat, lon]);
+        }
+    }
+
     function setAircraft(list) {
         if (!aircraftLayer) return;
         aircraftLayer.clearLayers();
@@ -86,5 +97,13 @@ window.planeWebMap = (() => {
         (el.requestFullscreen || el.webkitRequestFullscreen || (() => {})).call(el);
     }
 
-    return { init, update, setAircraft, locate, dispose, requestFullscreen };
+    return { init, update, centerOn, setAircraft, locate, dispose, requestFullscreen };
 })();
+
+// Utilities for combobox/dropdown accessibility
+window.planeWebUI = {
+    scrollIntoView(elementId) {
+        const el = document.getElementById(elementId);
+        if (el) el.scrollIntoView({ block: 'nearest' });
+    }
+};

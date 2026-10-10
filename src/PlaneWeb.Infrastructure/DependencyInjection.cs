@@ -127,6 +127,14 @@ public static class DependencyInjection
         services.AddHostedService(sp => sp.GetRequiredService<TraceBackfillService>());
         services.AddSingleton<PollerRegistry>();
         services.AddHostedService(sp => sp.GetRequiredService<PollerRegistry>());
+
+        // Geocoding
+        services.AddSingleton<CityGeocoderCache>();
+        services.AddHttpClient<ICityGeocoder, OpenMeteoCityGeocoder>(c =>
+        {
+            c.BaseAddress = new Uri(config["PlaneWeb:GeocodingBaseUrl"] ?? "https://geocoding-api.open-meteo.com/");
+            c.DefaultRequestHeaders.UserAgent.ParseAdd(ua);
+        }).AddStandardResilienceHandler();
         return services;
     }
 }
