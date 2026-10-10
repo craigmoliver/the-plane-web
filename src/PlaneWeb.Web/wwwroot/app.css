@@ -96,6 +96,10 @@ code, .mono { font-family: ui-monospace, monospace; }
 .fc-progress .plane { position: absolute; top: 50%; transform: translate(-50%, -55%); color: var(--amber); font-size: clamp(1.5rem, 3vw, 3rem); text-shadow: 0 0 10px var(--amber); transition: left 1s; }
 .fc-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 2vw; }
 .fc-stats > div { display: flex; flex-direction: column; }
+.fc-stops { text-align: center; }
+.fc-details { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1vh 2vw; }
+.fc-details > div { display: flex; flex-direction: column; min-width: 0; }
+.fc-details .led { overflow-wrap: anywhere; }
 
 /* ---------- Home ---------- */
 .home { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; text-align: center; padding: 2rem; }
