@@ -270,15 +270,27 @@
             case "ArrowDown" when cityMatches is { Count: > 0 }:
                 showingCityMatches = true;
                 cityActive = (cityActive + 1) % cityMatches.Count;
+                await ScrollCityOptionIntoView();
                 break;
             case "ArrowUp" when cityMatches is { Count: > 0 }:
                 showingCityMatches = true;
                 cityActive = cityActive <= 0 ? cityMatches.Count - 1 : cityActive - 1;
+                await ScrollCityOptionIntoView();
                 break;
             case "Enter" when CityListOpen:
                 await PickCity(cityMatches![cityActive >= 0 ? cityActive : 0]);
                 break;
         }
+    }
+
+    private async Task ScrollCityOptionIntoView()
+    {
+        if (cityActive < 0) return;
+        try
+        {
+            await JS.InvokeVoidAsync("planeWebUI.scrollIntoView", $"city-opt-{cityActive}");
+        }
+        catch { /* JS interop error; the list is still visible */ }
     }
 
     private async Task PickCity(CityResult result)

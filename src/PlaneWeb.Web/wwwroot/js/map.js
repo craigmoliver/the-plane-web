@@ -88,3 +88,11 @@ window.planeWebMap = (() => {
 
     return { init, update, setAircraft, locate, dispose, requestFullscreen };
 })();
+
+// Utilities for combobox/dropdown accessibility
+window.planeWebUI = {
+    scrollIntoView(elementId) {
+        const el = document.getElementById(elementId);
+        if (el) el.scrollIntoView({ block: 'nearest' });
+    }
+};
