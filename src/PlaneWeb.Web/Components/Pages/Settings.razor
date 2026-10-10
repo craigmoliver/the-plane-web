@@ -172,6 +172,7 @@
     private bool showingCityMatches;
     private int cityActive = -1;
     private CancellationTokenSource? citySearchCts;
+    private bool pendingCityScroll;
 
     private RenderFragment CitySearch => @<label>
         Search city
@@ -205,6 +206,12 @@
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        if (pendingCityScroll)
+        {
+            pendingCityScroll = false;
+            await ScrollCityOptionIntoView();
+        }
+        
         if (s is { Mode: DisplayMode.Area } && !mapReady)
         {
             selfRef ??= DotNetObjectReference.Create(this);
@@ -214,7 +221,7 @@
         }
     }
 
-    private object MapState() => new
+        private object MapState() => new
     {
         lat = s!.CenterLat, lon = s.CenterLon, radiusNm = s.RadiusNm, shape = (int)s.Shape,
         polygon = s.Polygon.Select(p => new[] { p.Lat, p.Lon }).ToArray(),
@@ -270,12 +277,12 @@
             case "ArrowDown" when cityMatches is { Count: > 0 }:
                 showingCityMatches = true;
                 cityActive = (cityActive + 1) % cityMatches.Count;
-                await ScrollCityOptionIntoView();
+                pendingCityScroll = true;
                 break;
             case "ArrowUp" when cityMatches is { Count: > 0 }:
                 showingCityMatches = true;
                 cityActive = cityActive <= 0 ? cityMatches.Count - 1 : cityActive - 1;
-                await ScrollCityOptionIntoView();
+                pendingCityScroll = true;
                 break;
             case "Enter" when CityListOpen:
                 await PickCity(cityMatches![cityActive >= 0 ? cityActive : 0]);
