@@ -170,19 +170,26 @@
     private string cityQuery = "";
     private IReadOnlyList<CityResult>? cityMatches;
     private bool showingCityMatches;
+    private int cityActive = -1;
     private CancellationTokenSource? citySearchCts;
 
     private RenderFragment CitySearch => @<label>
         Search city
         <div class="city-search">
-            <input type="text" @bind="cityQuery" @bind:event="oninput" @bind:after="SearchCitiesAsync"
+            <input type="text" role="combobox" aria-autocomplete="list" aria-controls="city-listbox"
+                   aria-expanded="@(CityListOpen ? "true" : "false")"
+                   aria-activedescendant="@(CityListOpen && cityActive >= 0 ? $"city-opt-{cityActive}" : null)"
+                   @bind="cityQuery" @bind:event="oninput" @bind:after="SearchCitiesAsync"
                    @onblur="CloseCityMatches" @onkeydown="OnCityKeyDown" autocomplete="off" />
-            @if (showingCityMatches && cityMatches is { Count: > 0 })
+            @if (CityListOpen)
             {
-                <div class="city-dropdown">
-                    @foreach (var match in cityMatches)
+                <div class="city-dropdown" id="city-listbox" role="listbox">
+                    @for (var i = 0; i < cityMatches!.Count; i++)
                     {
-                        <button type="button" class="city-option" @onmousedown="() => PickCity(match)" @onmousedown:preventDefault>@match.Label</button>
+                        var match = cityMatches[i];
+                        <div id="@($"city-opt-{i}")" role="option" aria-selected="@(i == cityActive ? "true" : "false")"
+                             class="city-option @(i == cityActive ? "active" : "")"
+                             @onmousedown:preventDefault @onclick="() => PickCity(match)">@match.Label</div>
                     }
                 </div>
             }
@@ -218,16 +225,21 @@
         if (mapReady) await JS.InvokeVoidAsync("planeWebMap.update", MapState(), false);
     }
 
+    private bool CityListOpen => showingCityMatches && cityMatches is { Count: > 0 };
+
     private async Task SearchCitiesAsync()
     {
         citySearchCts?.Cancel();
         citySearchCts?.Dispose();
+        // Hide the previous query's matches immediately so they can't be picked while the new search runs.
+        cityMatches = null;
+        showingCityMatches = false;
+        cityActive = -1;
+
         var query = cityQuery.Trim();
         if (query.Length < 2)
         {
             citySearchCts = null;
-            cityMatches = null;
-            showingCityMatches = false;
             return;
         }
 
@@ -236,6 +248,8 @@
         {
             await Task.Delay(300, cts.Token); // debounce: a newer keystroke cancels this
             var results = await CityGeocoder.SearchAsync(query, cts.Token);
+            // Only publish if this is still the latest search (a completion can race cancellation).
+            if (!ReferenceEquals(cts, citySearchCts) || cts.IsCancellationRequested) return;
             cityMatches = results;
             showingCityMatches = true;
         }
@@ -244,12 +258,27 @@
 
     private void CloseCityMatches() => showingCityMatches = false;
 
-    private void OnCityKeyDown(KeyboardEventArgs e)
+    private async Task OnCityKeyDown(KeyboardEventArgs e)
     {
-        if (e.Key != "Escape") return;
-        citySearchCts?.Cancel();
-        showingCityMatches = false;
-        cityQuery = "";
+        switch (e.Key)
+        {
+            case "Escape":
+                citySearchCts?.Cancel();
+                showingCityMatches = false;
+                cityQuery = "";
+                break;
+            case "ArrowDown" when cityMatches is { Count: > 0 }:
+                showingCityMatches = true;
+                cityActive = (cityActive + 1) % cityMatches.Count;
+                break;
+            case "ArrowUp" when cityMatches is { Count: > 0 }:
+                showingCityMatches = true;
+                cityActive = cityActive <= 0 ? cityMatches.Count - 1 : cityActive - 1;
+                break;
+            case "Enter" when CityListOpen:
+                await PickCity(cityMatches![cityActive >= 0 ? cityActive : 0]);
+                break;
+        }
     }
 
     private async Task PickCity(CityResult result)
@@ -260,6 +289,7 @@
         cityQuery = "";
         cityMatches = null;
         showingCityMatches = false;
+        cityActive = -1;
         await UpdateMap();
     }
 

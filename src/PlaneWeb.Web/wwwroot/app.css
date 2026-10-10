@@ -282,7 +282,7 @@ table.users tr.disabled { opacity: .55; }
     cursor: pointer;
     font: inherit;
 }
-.city-option:hover {
+.city-option:hover, .city-option.active {
     background: #1d1f22;
 }
 table.users .actions { display: flex; flex-wrap: wrap; gap: .3rem; }

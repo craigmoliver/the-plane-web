@@ -1,5 +1,4 @@
 using System.Net;
-using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging.Abstractions;
 using PlaneWeb.Infrastructure.Services;
 
@@ -30,8 +29,8 @@ public class CityGeocoderTests
     private static Handler Ok(string body) =>
         new((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) }));
 
-    private static OpenMeteoCityGeocoder Make(Handler h, string baseUrl = "https://geo.test/") =>
-        new(new HttpClient(h) { BaseAddress = new Uri(baseUrl) }, new MemoryCache(new MemoryCacheOptions()),
+    private static OpenMeteoCityGeocoder Make(Handler h, string baseUrl = "https://geo.test/", CityGeocoderCache? cache = null) =>
+        new(new HttpClient(h) { BaseAddress = new Uri(baseUrl) }, cache ?? new CityGeocoderCache(),
             NullLogger<OpenMeteoCityGeocoder>.Instance);
 
     [Fact]
@@ -74,6 +73,22 @@ public class CityGeocoderTests
         await svc.SearchAsync("Woodstock", default);
         await svc.SearchAsync("woodstock", default);
         Assert.Equal(1, h.Calls);
+    }
+
+    [Fact]
+    public async Task Cache_IsBounded_AndOverlongQueriesAreRejected()
+    {
+        var h = Ok(Body);
+        var svc = Make(h, cache: new CityGeocoderCache(maxEntries: 2));
+        foreach (var q in new[] { "aa", "bb", "cc", "dd" }) await svc.SearchAsync(q, default);
+        Assert.Equal(4, h.Calls);
+        // Only 2 entries fit, so at most 2 of the 4 repeats can be served from cache.
+        foreach (var q in new[] { "aa", "bb", "cc", "dd" }) await svc.SearchAsync(q, default);
+        Assert.True(h.Calls >= 6);
+
+        var before = h.Calls;
+        Assert.Empty(await svc.SearchAsync(new string('x', OpenMeteoCityGeocoder.MaxQueryLength + 1), default));
+        Assert.Equal(before, h.Calls);
     }
 
     [Fact]

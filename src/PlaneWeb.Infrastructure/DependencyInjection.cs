@@ -129,7 +129,7 @@ public static class DependencyInjection
         services.AddHostedService(sp => sp.GetRequiredService<PollerRegistry>());
 
         // Geocoding
-        services.AddMemoryCache();
+        services.AddSingleton<CityGeocoderCache>();
         services.AddHttpClient<ICityGeocoder, OpenMeteoCityGeocoder>(c =>
         {
             c.BaseAddress = new Uri(config["PlaneWeb:GeocodingBaseUrl"] ?? "https://geocoding-api.open-meteo.com/");

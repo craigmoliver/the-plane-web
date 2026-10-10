@@ -5,21 +5,42 @@ using PlaneWeb.Core;
 
 namespace PlaneWeb.Infrastructure.Services;
 
+/// <summary>
+/// Bounded cache of city search results. Shared (singleton) because typed HTTP clients are created per injection.
+/// Entry count is capped so user-typed queries cannot grow memory without limit.
+/// </summary>
+public sealed class CityGeocoderCache(int maxEntries = 500)
+{
+    private readonly MemoryCache _cache = new(new MemoryCacheOptions { SizeLimit = maxEntries });
+
+    public bool TryGet(string key, out IReadOnlyList<CityResult> results)
+    {
+        if (_cache.TryGetValue(key, out IReadOnlyList<CityResult>? hit) && hit is not null) { results = hit; return true; }
+        results = [];
+        return false;
+    }
+
+    public void Set(string key, IReadOnlyList<CityResult> results, TimeSpan ttl) =>
+        _cache.Set(key, results, new MemoryCacheEntryOptions { Size = 1, AbsoluteExpirationRelativeToNow = ttl });
+}
+
 /// <summary>City search via the Open-Meteo geocoding API (free, no key). Failures yield an empty list.</summary>
 public sealed class OpenMeteoCityGeocoder(
     HttpClient client,
-    IMemoryCache cache,
+    CityGeocoderCache cache,
     ILogger<OpenMeteoCityGeocoder> logger) : ICityGeocoder
 {
     private static readonly TimeSpan CacheFor = TimeSpan.FromDays(1);
+    /// <summary>No real city name is longer; rejecting longer input bounds cache keys and upstream URLs.</summary>
+    public const int MaxQueryLength = 80;
 
     public async Task<IReadOnlyList<CityResult>> SearchAsync(string query, CancellationToken ct)
     {
         query = query.Trim();
-        if (query.Length < 2) return [];
+        if (query.Length < 2 || query.Length > MaxQueryLength) return [];
 
         var key = "city:" + query.ToLowerInvariant();
-        if (cache.TryGetValue(key, out IReadOnlyList<CityResult>? cached) && cached is not null) return cached;
+        if (cache.TryGet(key, out var cached)) return cached;
 
         try
         {
@@ -45,7 +66,7 @@ public sealed class OpenMeteoCityGeocoder(
                 }
             }
 
-            cache.Set(key, (IReadOnlyList<CityResult>)list, CacheFor);
+            cache.Set(key, list, CacheFor);
             return list;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
