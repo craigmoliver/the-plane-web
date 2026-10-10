@@ -317,6 +317,11 @@
         showingCityMatches = false;
         cityActive = -1;
         await UpdateMap();
+        // Move the viewport to the chosen city. In polygon mode there is no radius area around the new
+        // center, so just pan; in radius mode fit the circle so the whole area is visible.
+        if (mapReady)
+            await JS.InvokeVoidAsync("planeWebMap.centerOn", s.CenterLat, s.CenterLon,
+                s.Shape == AreaShape.Radius ? s.RadiusNm : 0);
     }
 
     [JSInvokable]
