@@ -263,7 +263,12 @@
         catch (OperationCanceledException) { /* superseded by a newer query */ }
     }
 
-    private void CloseCityMatches() => showingCityMatches = false;
+    private void CloseCityMatches()
+    {
+        // Cancel any pending search so it can't reopen the list after focus has left the input.
+        citySearchCts?.Cancel();
+        showingCityMatches = false;
+    }
 
     private async Task OnCityKeyDown(KeyboardEventArgs e)
     {
@@ -273,6 +278,8 @@
                 citySearchCts?.Cancel();
                 showingCityMatches = false;
                 cityQuery = "";
+                cityMatches = null;
+                cityActive = -1;
                 break;
             case "ArrowDown" when cityMatches is { Count: > 0 }:
                 showingCityMatches = true;
