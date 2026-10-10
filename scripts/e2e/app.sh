@@ -14,11 +14,13 @@ case "${1:-}" in
     if curl -fs "http://localhost:$PORT/healthz" >/dev/null 2>&1; then
       echo "port $PORT is already serving a process not managed by this script; free it first: $0 stop" >&2; exit 1; fi
     # Run the built DLL directly. Development env is required so static web assets (_framework/blazor.web.js) resolve.
-    (cd "$ROOT/src/PlaneWeb.Web" && \
-      ASPNETCORE_ENVIRONMENT=Development ASPNETCORE_URLS="http://localhost:$PORT" \
+    cd "$ROOT/src/PlaneWeb.Web"
+    export ASPNETCORE_ENVIRONMENT=Development ASPNETCORE_URLS="http://localhost:$PORT" \
       ConnectionStrings__Default="Data Source=$DB" \
-      PlaneWeb__Auth__AdminEmail="${ADMIN_EMAIL:-me@example.com}" PlaneWeb__Auth__AdminPassword="${ADMIN_PASSWORD:-dev-password-1}" \
-      setsid nohup dotnet "$ROOT/src/PlaneWeb.Web/bin/${CONFIG:-Release}/net10.0/PlaneWeb.Web.dll" >"$LOG" 2>&1 </dev/null & echo $! >"$PIDFILE")
+      PlaneWeb__Auth__AdminEmail="${ADMIN_EMAIL:-me@example.com}" PlaneWeb__Auth__AdminPassword="${ADMIN_PASSWORD:-dev-password-1}"
+    # Background the executable itself so $! is the dotnet pid (not a wrapper subshell); setsid is exec'd, keeping the pid.
+    setsid dotnet "$ROOT/src/PlaneWeb.Web/bin/${CONFIG:-Release}/net10.0/PlaneWeb.Web.dll" >"$LOG" 2>&1 </dev/null &
+    echo $! >"$PIDFILE"
     for _ in $(seq 1 40); do
       curl -fs "http://localhost:$PORT/healthz" >/dev/null && { echo "up on :$PORT (pid $(cat "$PIDFILE"))"; exit 0; }
       sleep 1

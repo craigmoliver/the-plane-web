@@ -14,7 +14,7 @@ function chrome() {
   for (const d of dirs) { const p = path.join(root, d, 'chrome-linux64/chrome'); if (fs.existsSync(p)) return p; }
 }
 (async () => {
-  const query = process.argv[2] || 'Atlanta';
+  const query = process.argv.slice(2).find(a => !a.startsWith('--')) || 'Atlanta';
   const key = (process.argv.find(a => a.startsWith('--key=')) || '--key=Enter').split('=')[1];
   const base = process.env.BASE_URL || 'http://localhost:5099';
   const b = await load().chromium.launch({ executablePath: chrome() });
