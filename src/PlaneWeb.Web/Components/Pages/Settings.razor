@@ -45,21 +45,7 @@
                         <label>Latitude <input type="number" step="0.0001" @bind="s.CenterLat" @bind:after="UpdateMap" /></label>
                         <label>Longitude <input type="number" step="0.0001" @bind="s.CenterLon" @bind:after="UpdateMap" /></label>
                     </div>
-                    <div class="row">
-                        <label>
-                            Search city
-                            <input type="text" @bind="cityQuery" @oninput="OnCityQueryChanged" @onblur="OnCityBlur" @onkeydown="OnCityKeyDown" autocomplete="off" />
-                            @if (cityMatches?.Count > 0)
-                            {
-                                <div class="city-dropdown">
-                                    @foreach (var match in cityMatches)
-                                    {
-                                        <button type="button" class="city-option" @onclick="() => PickCity(match)">@match.Label</button>
-                                    }
-                                </div>
-                            }
-                        </label>
-                    </div>
+                    @CitySearch
                     <button class="btn" @onclick="UseMyLocation">📍 Use my location</button>
                     @if (s.Shape == AreaShape.Radius)
                     {
@@ -105,21 +91,7 @@
                         }
                     }
                     <label>Reference location (for distance)</label>
-                    <div class="row">
-                        <label>
-                            Search city
-                            <input type="text" @bind="cityQuery" @oninput="OnCityQueryChanged" @onblur="OnCityBlur" @onkeydown="OnCityKeyDown" autocomplete="off" />
-                            @if (cityMatches?.Count > 0)
-                            {
-                                <div class="city-dropdown">
-                                    @foreach (var match in cityMatches)
-                                    {
-                                        <button type="button" class="city-option" @onclick="() => PickCity(match)">@match.Label</button>
-                                    }
-                                </div>
-                            }
-                        </label>
-                    </div>
+                    @CitySearch
                     <div class="row">
                         <label>Latitude <input type="number" step="0.0001" @bind="s.CenterLat" /></label>
                         <label>Longitude <input type="number" step="0.0001" @bind="s.CenterLon" /></label>
@@ -197,7 +169,25 @@
     private string liveSummary = "";
     private string cityQuery = "";
     private IReadOnlyList<CityResult>? cityMatches;
-    private bool showingCityMatches = false;
+    private bool showingCityMatches;
+    private CancellationTokenSource? citySearchCts;
+
+    private RenderFragment CitySearch => @<label>
+        Search city
+        <div class="city-search">
+            <input type="text" @bind="cityQuery" @bind:event="oninput" @bind:after="SearchCitiesAsync"
+                   @onblur="CloseCityMatches" @onkeydown="OnCityKeyDown" autocomplete="off" />
+            @if (showingCityMatches && cityMatches is { Count: > 0 })
+            {
+                <div class="city-dropdown">
+                    @foreach (var match in cityMatches)
+                    {
+                        <button type="button" class="city-option" @onmousedown="() => PickCity(match)" @onmousedown:preventDefault>@match.Label</button>
+                    }
+                </div>
+            }
+        </div>
+    </label>;
 
     protected override async Task OnInitializedAsync()
     {
@@ -228,52 +218,49 @@
         if (mapReady) await JS.InvokeVoidAsync("planeWebMap.update", MapState(), false);
     }
 
-    private async Task OnCityQueryChanged(ChangeEventArgs e)
+    private async Task SearchCitiesAsync()
     {
-        var query = (e.Value?.ToString() ?? "").Trim();
-        cityMatches = null;
-        showingCityMatches = false;
-
-        // Debounce the request
-        if (!string.IsNullOrEmpty(query) && query.Length >= 2)
+        citySearchCts?.Cancel();
+        citySearchCts?.Dispose();
+        var query = cityQuery.Trim();
+        if (query.Length < 2)
         {
-            var canceller = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
-            try
-            {
-                cityMatches = await CityGeocoder.SearchAsync(query, canceller.Token);
-                showingCityMatches = true;
-                StateHasChanged();
-            }
-            catch (OperationCanceledException)
-            {
-                // Expected when search is cancelled due to new typing
-            }
+            citySearchCts = null;
+            cityMatches = null;
+            showingCityMatches = false;
+            return;
         }
+
+        var cts = citySearchCts = new CancellationTokenSource();
+        try
+        {
+            await Task.Delay(300, cts.Token); // debounce: a newer keystroke cancels this
+            var results = await CityGeocoder.SearchAsync(query, cts.Token);
+            cityMatches = results;
+            showingCityMatches = true;
+        }
+        catch (OperationCanceledException) { /* superseded by a newer query */ }
     }
 
-    private void OnCityBlur(FocusEventArgs e)
-    {
-        // Delay closing the dropdown slightly to allow for click events
-        Task.Delay(100).ContinueWith(_ => showingCityMatches = false);
-    }
+    private void CloseCityMatches() => showingCityMatches = false;
 
     private void OnCityKeyDown(KeyboardEventArgs e)
     {
-        if (e.Key == "Escape")
-        {
-            showingCityMatches = false;
-            cityQuery = "";
-        }
+        if (e.Key != "Escape") return;
+        citySearchCts?.Cancel();
+        showingCityMatches = false;
+        cityQuery = "";
     }
 
-    private void PickCity(CityResult result)
+    private async Task PickCity(CityResult result)
     {
+        citySearchCts?.Cancel();
         s!.CenterLat = Math.Round(result.Lat, 5);
         s.CenterLon = Math.Round(result.Lon, 5);
         cityQuery = "";
         cityMatches = null;
         showingCityMatches = false;
-        UpdateMap();
+        await UpdateMap();
     }
 
     [JSInvokable]
@@ -355,6 +342,8 @@
     public override async ValueTask DisposeAsync()
     {
         await base.DisposeAsync();
+        citySearchCts?.Cancel();
+        citySearchCts?.Dispose();
         try { if (mapReady) await JS.InvokeVoidAsync("planeWebMap.dispose"); } catch (JSDisconnectedException) { }
         selfRef?.Dispose();
     }

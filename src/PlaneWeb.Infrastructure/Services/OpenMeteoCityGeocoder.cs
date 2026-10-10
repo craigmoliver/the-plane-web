@@ -1,80 +1,64 @@
-using PlaneWeb.Core;
 using System.Text.Json;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
+using PlaneWeb.Core;
 
 namespace PlaneWeb.Infrastructure.Services;
 
-/// <summary>Uses https://geocoding-api.open-meteo.com/v1/search to find cities.</summary>
+/// <summary>City search via the Open-Meteo geocoding API (free, no key). Failures yield an empty list.</summary>
 public sealed class OpenMeteoCityGeocoder(
     HttpClient client,
     IMemoryCache cache,
     ILogger<OpenMeteoCityGeocoder> logger) : ICityGeocoder
 {
-    private static readonly Uri BaseUri = new("https://geocoding-api.open-meteo.com/v1/search");
+    private static readonly TimeSpan CacheFor = TimeSpan.FromDays(1);
 
     public async Task<IReadOnlyList<CityResult>> SearchAsync(string query, CancellationToken ct)
     {
-        // Trim and check minimum length.
         query = query.Trim();
-        if (query.Length < 2)
-        {
-            logger.LogDebug("Query '{Query}' is too short to search", query);
-            return [];
-        }
+        if (query.Length < 2) return [];
 
-        // Check for cached result.
-        var key = query.ToLowerInvariant();
-        if (cache.TryGetValue<IReadOnlyList<CityResult>>(key, out var cached))
-        {
-            logger.LogDebug("Returning cached results for '{Query}'", query);
-            return cached;
-        }
-
-        // Build the request URI.
-        var uri = new Uri(BaseUri, $"?name={Uri.EscapeDataString(query)}&count=8&language=en&format=json");
+        var key = "city:" + query.ToLowerInvariant();
+        if (cache.TryGetValue(key, out IReadOnlyList<CityResult>? cached) && cached is not null) return cached;
 
         try
         {
-            using var response = await client.GetAsync(uri, ct);
+            using var response = await client.GetAsync(
+                $"v1/search?name={Uri.EscapeDataString(query)}&count=8&language=en&format=json", ct);
             if (!response.IsSuccessStatusCode)
             {
-                logger.LogWarning("HTTP {Status} when searching for '{Query}'", response.StatusCode, query);
+                logger.LogDebug("City search for '{Query}' returned HTTP {Status}", query, (int)response.StatusCode);
                 return [];
             }
 
-            // Read the JSON body.
-            using var stream = await response.Content.ReadAsStreamAsync(ct);
-            var json = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
-            if (json.RootElement.TryGetProperty("results", out var results))
+            await using var stream = await response.Content.ReadAsStreamAsync(ct);
+            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+            var list = new List<CityResult>();
+            if (doc.RootElement.TryGetProperty("results", out var results) && results.ValueKind == JsonValueKind.Array)
             {
-                var list = new List<CityResult>(results.GetArrayLength());
                 foreach (var item in results.EnumerateArray())
                 {
-                    list.Add(new(
-                        Name: item.GetProperty("name").GetString() ?? "",
-                        Region: item.GetProperty("admin1").GetString(),
-                        Country: item.GetProperty("country").GetString(),
-                        Lat: item.GetProperty("latitude").GetDouble(),
-                        Lon: item.GetProperty("longitude").GetDouble()
-                    ));
+                    var name = Str(item, "name");
+                    if (name is null || !item.TryGetProperty("latitude", out var lat) || !item.TryGetProperty("longitude", out var lon)
+                        || lat.ValueKind != JsonValueKind.Number || lon.ValueKind != JsonValueKind.Number) continue;
+                    list.Add(new CityResult(name, Str(item, "admin1"), Str(item, "country"), lat.GetDouble(), lon.GetDouble()));
                 }
+            }
 
-                // Cache the results for 1 day.
-                cache.Set(key, list, TimeSpan.FromDays(1));
-                logger.LogDebug("Found {Count} results for '{Query}'", list.Count, query);
-                return list;
-            }
-            else
-            {
-                logger.LogDebug("No results found for '{Query}'", query);
-                return [];
-            }
+            cache.Set(key, (IReadOnlyList<CityResult>)list, CacheFor);
+            return list;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Error searching for city '{Query}'", query);
+            logger.LogDebug(ex, "City search for '{Query}' failed", query);
             return [];
         }
     }
+
+    private static string? Str(JsonElement e, string name) =>
+        e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 }

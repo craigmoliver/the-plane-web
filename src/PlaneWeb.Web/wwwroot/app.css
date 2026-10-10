@@ -259,8 +259,9 @@ table.users th, table.users td { text-align: left; padding: .5rem; border-bottom
 table.users tr.disabled { opacity: .55; }
 
 /* City search dropdown */
+.city-search { position: relative; }
 .city-dropdown {
-    position: absolute;
+    position: absolute; top: 100%; left: 0;
     z-index: 10;
     width: 100%;
     background: #0b0c0d;
