@@ -63,7 +63,8 @@ window.planeWebMap = (() => {
     function centerOn(lat, lon, radiusNm) {
         if (!map) return;
         if (radiusNm > 0) {
-            map.fitBounds(L.circle([lat, lon], { radius: radiusNm * 1852 }).getBounds(), { padding: [20, 20] });
+            // toBounds needs no map; an unattached L.circle.getBounds() throws (layerPointToLatLng).
+            map.fitBounds(L.latLng(lat, lon).toBounds(radiusNm * 1852 * 2), { padding: [20, 20] });
         } else {
             map.setView([lat, lon]);
         }
