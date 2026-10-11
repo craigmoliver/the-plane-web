@@ -8,10 +8,10 @@ name: Azure infrastructure
 #   teardown  Deallocate the VM. Cheapest reversible stop: compute billing ends, but the OS disk,
 #             static public IP and backup vault remain (~$12-15/month). Data, DNS name and Caddy
 #             certificates are preserved, so a later `setup` brings it back in seconds.
-#   delete    Delete the whole resource group: VM, disk, public IP, network and backup vault, so all
-#             charges stop. Irreversible -- local accounts/settings and backup history are lost. The
-#             public IP's DNS label is derived from the resource group id, so `setup` recreates the
-#             same hostname with a fresh bootstrap admin. Requires the `confirm` input below.
+#   delete    Remove the stack's billable resources (VM, disk, NIC, NSG, VNet, public IP, backup
+#             vault) but keep the resource group itself, so all charges stop while the deploy
+#             identity's role assignment survives and `setup` can rebuild the same stack. This
+#             destroys local data (fresh bootstrap on rebuild). Requires the `confirm` input below.
 #
 # Reuses the deploy pipeline (deploy.yml) for the rebuild path rather than duplicating it.
 on:
@@ -37,16 +37,19 @@ permissions:
   packages: write
   id-token: write   # OIDC sign-in to Azure (no stored Azure credentials)
 
-# Never race a push-to-main deploy: both touch the same Azure resources.
-concurrency:
-  group: deploy-production
-  cancel-in-progress: false
-
+# Concurrency is set per job below, NOT at workflow level, on purpose: a workflow-level lock is held
+# for the whole run, so the `setup-redeploy` job could never acquire deploy.yml's own
+# `deploy-production` lock while calling it -- a deadlock. Jobs and workflows share a concurrency
+# group, so the per-job locks still serialize against push deploys. `setup-redeploy` carries none of
+# its own; it inherits deploy.yml's.
 jobs:
   setup-detect:
     # Skip until Azure is configured (docs/azure.md), so the workflow is inert otherwise.
     if: vars.AZURE_CLIENT_ID != '' && inputs.action == 'setup'
     runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
     environment:
       name: production
     outputs:
@@ -82,6 +85,9 @@ jobs:
     needs: setup-detect
     if: needs.setup-detect.outputs.vm_exists == 'true'
     runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
     environment:
       name: production
     steps:
@@ -98,7 +104,7 @@ jobs:
           VM=planeweb-vm
           echo "Starting $VM..."
           az vm start -g "$RG" -n "$VM" -o none
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             state=$(az vm get-instance-view -g "$RG" -n "$VM" \
               --query "instanceView.statuses[?starts_with(code,'PowerState/')].code | [0]" -o tsv)
             if [ "$state" = "PowerState/running" ]; then echo "VM running."; exit 0; fi
@@ -112,13 +118,15 @@ jobs:
           url="https://$(az network public-ip show -g "${{ vars.AZURE_RESOURCE_GROUP }}" -n planeweb-ip \
             --query dnsSettings.fqdn -o tsv)"
           echo "Waiting for $url ..."
-          for i in $(seq 1 60); do curl -fs "$url/healthz" && break; sleep 10; done
+          for _ in $(seq 1 60); do curl -fs "$url/healthz" && break; sleep 10; done
           curl -fs "$url/healthz"
           test "$(curl -s -o /dev/null -w '%{http_code}' "$url/settings")" = 302
           echo "Running: $url"
 
   setup-redeploy:
     # Infra is gone (or never created): run the normal test -> image -> Bicep -> Run Command pipeline.
+    # Carries no concurrency of its own; deploy.yml acquires `deploy-production` itself (see the note
+    # above the `jobs:` key).
     needs: setup-detect
     if: needs.setup-detect.outputs.vm_exists != 'true'
     uses: ./.github/workflows/deploy.yml
@@ -127,6 +135,9 @@ jobs:
   teardown:
     if: vars.AZURE_CLIENT_ID != '' && inputs.action == 'teardown'
     runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
     environment:
       name: production
     steps:
@@ -156,6 +167,9 @@ jobs:
   delete:
     if: vars.AZURE_CLIENT_ID != '' && inputs.action == 'delete'
     runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
     environment:
       name: production
     steps:
@@ -164,7 +178,7 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: Delete the resource group
+      - name: Delete the stack's resources (keeping the resource group)
         env:
           CONFIRM: ${{ inputs.confirm }}
         run: |
@@ -174,18 +188,64 @@ jobs:
             echo "Refusing to delete: set the 'confirm' input to exactly '$RG' to proceed." >&2
             exit 1
           fi
-          if ! az group exists -n "$RG" | grep -q true; then
+
+          # Capture first: a nonzero CLI status aborts under `set -e` instead of being read as
+          # "false" (which would report a successful delete while the group is untouched).
+          exists=$(az group exists -n "$RG")
+          if [ "$exists" != "true" ]; then
             echo "Resource group '$RG' does not exist -- nothing to delete."
             exit 0
           fi
-          echo "Deleting resource group '$RG' (VM, disk, IP, network, backup vault and all data)..."
-          az group delete -n "$RG" --yes --no-wait
-          for i in $(seq 1 180); do
-            if ! az group exists -n "$RG" 2>/dev/null | grep -q true; then
-              echo "Deleted after ~$((i * 5))s."
-              exit 0
-            fi
-            sleep 5
+
+          VM=planeweb-vm; NIC=planeweb-nic; NSG=planeweb-nsg
+          VNET=planeweb-vnet; IP=planeweb-ip; VAULT=planeweb-vault
+
+          # VM first: its NIC (and that NIC's public IP) can't go until it's gone. The OS disk is a
+          # separate managed disk (deleteOption defaults to Detach), so it needs its own delete.
+          if az vm show -g "$RG" -n "$VM" -o none 2>/dev/null; then
+            echo "Deleting VM $VM..."
+            az vm delete -g "$RG" -n "$VM" --yes -o none
+          fi
+          for disk in $(az disk list -g "$RG" --query "[].name" -o tsv); do
+            echo "Deleting disk $disk..."
+            az disk delete -g "$RG" -n "$disk" --yes -o none
           done
-          echo "Timed out waiting for deletion; it may still be completing in Azure." >&2
-          exit 1
+          if az network nic show -g "$RG" -n "$NIC" -o none 2>/dev/null; then
+            echo "Deleting NIC $NIC..."
+            az network nic delete -g "$RG" -n "$NIC" -o none
+          fi
+          if az network nsg show -g "$RG" -n "$NSG" -o none 2>/dev/null; then
+            echo "Deleting NSG $NSG..."
+            az network nsg delete -g "$RG" -n "$NSG" -o none
+          fi
+          if az network vnet show -g "$RG" -n "$VNET" -o none 2>/dev/null; then
+            echo "Deleting VNet $VNET..."
+            az network vnet delete -g "$RG" -n "$VNET" -o none
+          fi
+          if az network public-ip show -g "$RG" -n "$IP" -o none 2>/dev/null; then
+            echo "Deleting public IP $IP..."
+            az network public-ip delete -g "$RG" -n "$IP" -o none
+          fi
+
+          # Backup: stop protection (deleting the data) before removing the vault. Soft-deleted
+          # recovery points can delay the vault delete; that's fine -- an empty vault costs nothing
+          # and the next deploy re-registers protection.
+          if az backup vault show -g "$RG" -n "$VAULT" -o none 2>/dev/null; then
+            az backup vault backup-properties set -g "$RG" -n "$VAULT" \
+              --soft-delete-feature-state Disable -o none || true
+            az backup item list -g "$RG" -v "$VAULT" \
+              --query "[].{name:name,container:properties.containerName}" -o tsv \
+              | while IFS=$'\t' read -r item container; do
+                  [ -n "$item" ] || continue
+                  echo "Stopping backup protection for $item..."
+                  az backup protection disable -g "$RG" -v "$VAULT" -c "$container" -i "$item" \
+                    --backup-management-type AzureIaasVM --delete-backup-data true --yes -o none || true
+                done
+            echo "Deleting vault $VAULT..."
+            az backup vault delete -g "$RG" -n "$VAULT" --force --yes -o none \
+              || echo "WARNING: vault '$VAULT' not deleted yet (soft-deleted data can delay this); an empty vault costs nothing."
+          fi
+
+          echo "Remaining resources in '$RG':"
+          az resource list -g "$RG" --query "[].{name:name,type:type}" -o table
+          echo "Stack resources deleted; the resource group and deploy identity are retained so 'setup' can rebuild."

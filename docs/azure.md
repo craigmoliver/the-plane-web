@@ -117,16 +117,17 @@ the `production` environment's branch policy and reviewers still apply):
 |---|---|---|---|
 | `setup` | Starts a deallocated VM, or triggers the full deploy pipeline if the stack is missing | – | – |
 | `teardown` | **Deallocates** the VM (`az vm deallocate`) | OS disk ~$3 + static IP ~$3.65 + backup ~$6–7 (≈$12–15/mo) | Yes — run `setup`; data, DNS name and Caddy certs are kept |
-| `delete` | Deletes the whole resource group (VM, disk, IP, network, backup vault) | $0 | Irreversible — see below |
+| `delete` | Removes the stack's billable resources (VM, disk, NIC, NSG, VNet, public IP, backup vault) but **keeps the resource group** | $0 | Irreversible for data — see below |
 
 - `setup` is idempotent: a running VM is just re-smoke-tested; a deallocated one is started and the
-  containers come back on their own (`restart: unless-stopped`); if the group is gone it reuses
-  `deploy.yml` to rebuild everything.
-- `delete` **destroys local accounts, per-user settings and backup history**. It requires you to type the
-  resource group name into the `confirm` input. The public IP's Azure DNS name is derived from the
-  resource group id, so a later `setup` recreates the *same hostname* (Let's Encrypt reuses the cert on
-  disk after a `teardown`; a `delete` gets a new one) with a fresh bootstrap admin from the repo
-  variables. Entra/Google sign-in config and admins are re-applied on first boot.
+  containers come back on their own (`restart: unless-stopped`); if the VM is gone it reuses
+  `deploy.yml` to rebuild the stack in place.
+- `delete` **destroys local accounts, per-user settings and backup history**, and requires you to type
+  the resource group name into the `confirm` input. It deliberately keeps the (empty) resource group:
+  the deploy identity's role assignment is scoped to it, so deleting the group would leave the identity
+  unable to rebuild. An empty group costs nothing, and a later `setup` recreates the *same hostname*
+  (the public IP's DNS label is derived from the resource group id) with a fresh bootstrap admin from
+  the repo variables. Entra/Google sign-in config and admins are re-applied on first boot.
 - A `teardown`/`delete` never runs at the same time as a push deploy: both share the `deploy-production`
   concurrency group.
 
