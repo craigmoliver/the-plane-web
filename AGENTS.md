@@ -2,6 +2,13 @@
 
 .NET 10 Blazor Server app ("The Plane Web"). See `README.md` for product behavior; this file is for working in the code.
 
+## Workflow (branches, PRs, review)
+- **Never commit to `main`.** Every change goes through a pull request; `main` is protected and only humans merge it.
+- Branch from an up-to-date `main`: `feature/<short-description>` (or `fix/…`, `docs/…`). Keep one concern per branch/PR.
+- Commit with clear messages, push the branch, then open a PR with `gh pr create --base main`. Fill the PR body per `.github/pull_request_template.md` (what/why + testing).
+- **Agents never merge.** A human reviews and merges. Address review feedback with follow-up commits on the same branch; don't force-push a branch under review unless asked.
+- Keep the branch current with `main`; if it has moved and there are conflicts, rebase or merge it in.
+
 ## Commands
 - Run: `PlaneWeb__Auth__AdminEmail=me@example.com PlaneWeb__Auth__AdminPassword=dev-password-1 dotnet run --project src/PlaneWeb.Web` (admin env vars are required or no login exists).
 - Test all: `dotnet test`. Single test: `dotnet test --filter "FullyQualifiedName~ClassName.MethodName"`.
