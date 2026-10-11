@@ -70,6 +70,31 @@ public class AircraftInfoTests
         Assert.Null(await svc.GetAsync("../etc", null, default));
     }
 
+    [Fact]
+    public async Task RegistryOnly_SkipsPhotoRequest_ReusesFullEntry_AndCoalesces()
+    {
+        var db = new Handler(Adsbdb, 30);
+        var ps = new Handler(Spotters);
+        var svc = new AircraftInfoService(
+            new HttpClient(db) { BaseAddress = new Uri("https://db/") },
+            new HttpClient(ps) { BaseAddress = new Uri("https://ps/") },
+            TimeProvider.System, Microsoft.Extensions.Logging.Abstractions.NullLogger<AircraftInfoService>.Instance);
+
+        var results = await Task.WhenAll(Enumerable.Range(0, 5).Select(_ => svc.GetRegistryAsync("ACF84E", null, default)));
+        Assert.All(results, r => { Assert.Equal("N935AT", r!.Registration); Assert.Null(r.Photo); });
+        Assert.Equal(1, db.Calls);
+        Assert.Equal(0, ps.Calls);
+
+        // A later full lookup still fetches the photo (registry-only results are not served as full ones)...
+        var full = await svc.GetAsync("ACF84E", null, default);
+        Assert.NotNull(full!.Photo);
+        Assert.Equal(1, ps.Calls);
+        // ...and once a full entry exists, registry-only callers reuse it without another upstream call.
+        var dbCalls = db.Calls;
+        Assert.NotNull((await svc.GetRegistryAsync("ACF84E", null, default))!.Photo);
+        Assert.Equal(dbCalls, db.Calls);
+    }
+
     private sealed class Failing : HttpMessageHandler
     {
         public int Calls;

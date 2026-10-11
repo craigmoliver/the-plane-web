@@ -485,3 +485,6 @@ $RECYCLE.BIN/
 *.db
 *.db-shm
 *.db-wal
+
+# Runtime trail snapshot written by the app (see PlaneWeb__TrailsFile)
+trails.json

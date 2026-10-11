@@ -128,8 +128,10 @@
     private WallSnapshot snap => Snapshot;
     private int pageIndex;
     private Timer? rotateTimer, clockTimer;
-    // Airframe registry details (manufacturer, model, owner, country) per hex; null = looked up, nothing found.
-    private readonly Dictionary<string, AircraftInfo?> infos = new(StringComparer.OrdinalIgnoreCase);
+    // Airframe registry details (manufacturer, model, owner, country) per hex. Unsuccessful lookups are
+    // retried once the service's miss lifetime has passed, so a transient upstream outage heals itself.
+    private readonly Dictionary<string, InfoEntry> infos = new(StringComparer.OrdinalIgnoreCase);
+    private sealed record InfoEntry(AircraftInfo? Info, DateTimeOffset LoadedAt);
     private readonly HashSet<string> infoLoading = new(StringComparer.OrdinalIgnoreCase);
 
     protected override async Task OnInitializedAsync()
@@ -153,21 +155,30 @@
         foreach (var live in snap.Tracked.Select(t => t.Live).OfType<FlightView>())
         {
             var hex = live.Aircraft.Hex;
-            if (infos.ContainsKey(hex) || !infoLoading.Add(hex)) continue;
+            if (!NeedsInfo(hex) || !infoLoading.Add(hex)) continue;
             var reg = live.Aircraft.Registration;
             _ = LoadInfoAsync(hex, reg);
         }
     }
 
+    /// <summary>True when there is no usable result yet: never looked up, or a miss older than the service's miss lifetime.</summary>
+    private bool NeedsInfo(string hex)
+    {
+        if (!infos.TryGetValue(hex, out var known)) return true;
+        if (known.Info is { Found: true }) return false;
+        return DateTimeOffset.UtcNow - known.LoadedAt >= AircraftInfoService.MissTtl;
+    }
+
     private async Task LoadInfoAsync(string hex, string? reg)
     {
         AircraftInfo? info = null;
-        try { info = await AircraftInfo.GetAsync(hex, reg, CancellationToken.None); }
+        // Registry only: the wall shows no photo, so skip the Planespotters request.
+        try { info = await AircraftInfo.GetRegistryAsync(hex, reg, CancellationToken.None); }
         catch (Exception) { /* upstream failures are non-fatal: the card just omits the extra fields */ }
         if (IsDisposed) return;
         await InvokeAsync(() =>
         {
-            infos[hex] = info;
+            infos[hex] = new InfoEntry(info, DateTimeOffset.UtcNow);
             infoLoading.Remove(hex);
             StateHasChanged();
         });
@@ -185,7 +196,7 @@
 
     private IEnumerable<(string Label, string Value)> IdentityDetails(Aircraft a)
     {
-        infos.TryGetValue(a.Hex, out var d);
+        var d = infos.TryGetValue(a.Hex, out var known) ? known.Info : null;
         string? Pick(params string?[] xs) => xs.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x));
         var rows = new (string, string?)[]
         {
