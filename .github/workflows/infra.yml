@@ -63,9 +63,13 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - id: detect
         run: |
+          set -euo pipefail
           RG="${{ vars.AZURE_RESOURCE_GROUP }}"
           VM=planeweb-vm
-          if az vm show -g "$RG" -n "$VM" -o none 2>/dev/null; then
+          # Captured, not used as an `if` condition: a transient CLI error must abort (set -e)
+          # rather than be read as "no VM" and trigger a needless rebuild.
+          vm_id=$(az vm list -g "$RG" --query "[?name=='$VM'].id | [0]" -o tsv)
+          if [ -n "$vm_id" ]; then
             state=$(az vm get-instance-view -g "$RG" -n "$VM" \
               --query "instanceView.statuses[?starts_with(code,'PowerState/')].code | [0]" -o tsv)
             echo "VM exists; power state: $state"
@@ -144,9 +148,13 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - name: Deallocate the VM
         run: |
+          set -euo pipefail
           RG="${{ vars.AZURE_RESOURCE_GROUP }}"
           VM=planeweb-vm
-          if ! az vm show -g "$RG" -n "$VM" -o none 2>/dev/null; then
+          # Captured, not used as an `if` condition: a transient CLI error must abort rather than be
+          # read as "no VM" and exit successfully while the VM keeps accruing compute charges.
+          vm_id=$(az vm list -g "$RG" --query "[?name=='$VM'].id | [0]" -o tsv)
+          if [ -z "$vm_id" ]; then
             echo "No VM '$VM' in '$RG' -- nothing to deallocate."
             exit 0
           fi
@@ -193,29 +201,42 @@ jobs:
           VM=planeweb-vm; NIC=planeweb-nic; NSG=planeweb-nsg
           VNET=planeweb-vnet; IP=planeweb-ip; VAULT=planeweb-vault
 
-          # VM first: its NIC (and that NIC's public IP) can't go until it's gone. The OS disk is a
-          # separate managed disk (deleteOption defaults to Detach), so it needs its own delete.
-          if az vm show -g "$RG" -n "$VM" -o none 2>/dev/null; then
+          # Echo a resource's id, or nothing if it is absent. Captured into a variable (never used
+          # directly as an `if` condition) so a transient CLI error aborts the step under `set -e`
+          # instead of being read as "absent" and leaving a billable resource behind.
+          resource_id() { az resource list -g "$RG" --query "[?name=='$1'].id | [0]" -o tsv; }
+
+          # VM first: its NIC (and that NIC's public IP) can't go until it's gone.
+          vm_id=$(resource_id "$VM")
+          if [ -n "$vm_id" ]; then
             echo "Deleting VM $VM..."
             az vm delete -g "$RG" -n "$VM" --yes -o none
           fi
-          for disk in $(az disk list -g "$RG" --query "[].name" -o tsv); do
-            echo "Deleting disk $disk..."
-            az disk delete -g "$RG" -n "$disk" --yes -o none
-          done
-          if az network nic show -g "$RG" -n "$NIC" -o none 2>/dev/null; then
+          # The OS disk is a separate managed disk (deleteOption defaults to Detach). Pipe the list
+          # into the loop so a failed `az disk list` propagates via pipefail instead of silently
+          # deleting nothing and leaving the disk billing.
+          az disk list -g "$RG" --query "[].name" -o tsv \
+            | while IFS= read -r disk; do
+                echo "Deleting disk $disk..."
+                az disk delete -g "$RG" -n "$disk" --yes -o none
+              done
+          nic_id=$(resource_id "$NIC")
+          if [ -n "$nic_id" ]; then
             echo "Deleting NIC $NIC..."
             az network nic delete -g "$RG" -n "$NIC" -o none
           fi
-          if az network nsg show -g "$RG" -n "$NSG" -o none 2>/dev/null; then
+          nsg_id=$(resource_id "$NSG")
+          if [ -n "$nsg_id" ]; then
             echo "Deleting NSG $NSG..."
             az network nsg delete -g "$RG" -n "$NSG" -o none
           fi
-          if az network vnet show -g "$RG" -n "$VNET" -o none 2>/dev/null; then
+          vnet_id=$(resource_id "$VNET")
+          if [ -n "$vnet_id" ]; then
             echo "Deleting VNet $VNET..."
             az network vnet delete -g "$RG" -n "$VNET" -o none
           fi
-          if az network public-ip show -g "$RG" -n "$IP" -o none 2>/dev/null; then
+          ip_id=$(resource_id "$IP")
+          if [ -n "$ip_id" ]; then
             echo "Deleting public IP $IP..."
             az network public-ip delete -g "$RG" -n "$IP" -o none
           fi
@@ -223,7 +244,8 @@ jobs:
           # Backup: stop protection (deleting the data) before removing the vault. Every command here
           # fails the step on error on purpose -- suppressing one would let `delete` report success
           # while the protected item and its recovery points keep billing.
-          if az backup vault show -g "$RG" -n "$VAULT" -o none 2>/dev/null; then
+          vault_id=$(resource_id "$VAULT")
+          if [ -n "$vault_id" ]; then
             az backup vault backup-properties set -g "$RG" -n "$VAULT" \
               --soft-delete-feature-state Disable -o none
             az backup item list -g "$RG" -v "$VAULT" \
