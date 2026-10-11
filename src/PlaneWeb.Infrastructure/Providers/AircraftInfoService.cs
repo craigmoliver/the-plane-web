@@ -21,6 +21,8 @@ public sealed record AircraftInfo
     public AircraftPhoto? Photo { get; init; }
     /// <summary>False when neither upstream returned data (only the caller's hints are present).</summary>
     [System.Text.Json.Serialization.JsonIgnore] public bool Found { get; init; }
+    /// <summary>True only when the adsbdb registry lookup itself succeeded (a photo alone does not count).</summary>
+    [System.Text.Json.Serialization.JsonIgnore] public bool RegistryFound { get; init; }
 }
 
 /// <summary>
@@ -54,8 +56,11 @@ public sealed class AircraftInfoService(HttpClient adsbdb, HttpClient planespott
         var fullKey = $"{hex}|{registration}";
         var now = time.GetUtcNow();
         // A registry-only caller can use an existing full entry, but a full caller needs its own (photo) entry.
-        if (!includePhoto && _cache.TryGetValue(fullKey, out var full) && full.Expires > now)
-            return await full.Value.Value.WaitAsync(ct);
+        // Only reuse it when it already finished with a successful registry lookup: a photo-only result
+        // (adsbdb down, Planespotters up) must not be served as registry data.
+        if (!includePhoto && _cache.TryGetValue(fullKey, out var full) && full.Expires > now &&
+            full.Value.IsValueCreated && full.Value.Value is { IsCompletedSuccessfully: true, Result.RegistryFound: true } done)
+            return done.Result;
         var key = includePhoto ? fullKey : $"{fullKey}|registry";
         if (_cache.TryGetValue(key, out var e) && e.Expires > now) return await e.Value.Value.WaitAsync(ct);
 
@@ -92,7 +97,7 @@ public sealed class AircraftInfoService(HttpClient adsbdb, HttpClient planespott
         try
         {
             info = ParseAdsbdb(hex, await adsbdb.GetStringAsync($"v0/aircraft/{hex}", cts.Token)) is { } parsed
-                ? parsed with { Registration = parsed.Registration ?? registration, Found = true } : info;
+                ? parsed with { Registration = parsed.Registration ?? registration, Found = true, RegistryFound = true } : info;
         }
         catch (Exception ex) when (ex is not OperationCanceledException || cts.IsCancellationRequested)
         { log.LogDebug(ex, "adsbdb lookup failed for {Hex}", hex); }

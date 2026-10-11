@@ -95,6 +95,29 @@ public class AircraftInfoTests
         Assert.Equal(dbCalls, db.Calls);
     }
 
+    [Fact]
+    public async Task RegistryOnly_DoesNotReusePhotoOnlyFullEntry()
+    {
+        // adsbdb is down but Planespotters answers: the full lookup is "found" (photo) without registry data.
+        var db = new Handler("not json");
+        var ps = new Handler(Spotters);
+        var svc = new AircraftInfoService(
+            new HttpClient(db) { BaseAddress = new Uri("https://db/") },
+            new HttpClient(ps) { BaseAddress = new Uri("https://ps/") },
+            TimeProvider.System, Microsoft.Extensions.Logging.Abstractions.NullLogger<AircraftInfoService>.Instance);
+
+        var full = await svc.GetAsync("ACF84E", "N935AT", default);
+        Assert.NotNull(full!.Photo);
+        Assert.True(full.Found);
+        Assert.False(full.RegistryFound);
+
+        var dbCalls = db.Calls;
+        var reg = await svc.GetRegistryAsync("ACF84E", "N935AT", default);
+        Assert.Null(reg!.Photo);
+        Assert.False(reg.RegistryFound);
+        Assert.Equal(dbCalls + 1, db.Calls); // fell through to its own registry lookup instead of reusing the photo-only entry
+    }
+
     private sealed class Failing : HttpMessageHandler
     {
         public int Calls;

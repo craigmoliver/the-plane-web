@@ -165,7 +165,7 @@
     private bool NeedsInfo(string hex)
     {
         if (!infos.TryGetValue(hex, out var known)) return true;
-        if (known.Info is { Found: true }) return false;
+        if (known.Info is { RegistryFound: true }) return false;
         return DateTimeOffset.UtcNow - known.LoadedAt >= AircraftInfoService.MissTtl;
     }
 
