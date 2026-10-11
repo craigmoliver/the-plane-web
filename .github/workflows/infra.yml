@@ -220,23 +220,22 @@ jobs:
             az network public-ip delete -g "$RG" -n "$IP" -o none
           fi
 
-          # Backup: stop protection (deleting the data) before removing the vault. Soft-deleted
-          # recovery points can delay the vault delete; that's fine -- an empty vault costs nothing
-          # and the next deploy re-registers protection.
+          # Backup: stop protection (deleting the data) before removing the vault. Every command here
+          # fails the step on error on purpose -- suppressing one would let `delete` report success
+          # while the protected item and its recovery points keep billing.
           if az backup vault show -g "$RG" -n "$VAULT" -o none 2>/dev/null; then
             az backup vault backup-properties set -g "$RG" -n "$VAULT" \
-              --soft-delete-feature-state Disable -o none || true
+              --soft-delete-feature-state Disable -o none
             az backup item list -g "$RG" -v "$VAULT" \
               --query "[].{name:name,container:properties.containerName}" -o tsv \
               | while IFS=$'\t' read -r item container; do
                   [ -n "$item" ] || continue
                   echo "Stopping backup protection for $item..."
                   az backup protection disable -g "$RG" -v "$VAULT" -c "$container" -i "$item" \
-                    --backup-management-type AzureIaasVM --delete-backup-data true --yes -o none || true
+                    --backup-management-type AzureIaasVM --delete-backup-data true --yes -o none
                 done
             echo "Deleting vault $VAULT..."
-            az backup vault delete -g "$RG" -n "$VAULT" --force --yes -o none \
-              || echo "WARNING: vault '$VAULT' not deleted yet (soft-deleted data can delay this); an empty vault costs nothing."
+            az backup vault delete -g "$RG" -n "$VAULT" --force --yes -o none
           fi
 
           echo "Remaining resources in '$RG':"
