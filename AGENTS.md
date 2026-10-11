@@ -33,3 +33,4 @@
 ## Deploy / CI
 - CI (`.github/workflows/ci.yml`) runs build+test, then Docker smoke tests on **both** SQLite and Postgres. The smoke test asserts: `/healthz`→200, `/settings`→302, `/api/aircraft/...`→401, every JS/CSS referenced by the login page is served (catches a broken Blazor runtime), and log contains `Created bootstrap admin`. Don't break these.
 - Push to `main` auto-deploys to an Azure VM running this Docker Compose setup (SQLite + Caddy).
+- `.github/workflows/infra.yml` is a manual-only workflow to `setup` (start/redeploy), `teardown` (deallocate the VM) or `delete` (remove the resource group) the stack to save cost; `setup` reuses `deploy.yml` via `workflow_call`.

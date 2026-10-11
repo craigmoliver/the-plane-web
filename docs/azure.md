@@ -108,6 +108,28 @@ Create an environment named **production**. Under **Deployment branches and tags
 Then run **Actions → Deploy to Azure → Run workflow**. The run summary prints the URL and the Entra/Google redirect URIs;
 add the Entra one to the Entra app registration (docs/entra.md) and the Google one to the Google OAuth client (docs/google.md).
 
+## Saving cost: setup / teardown
+The stack bills around the clock whether or not anyone is watching it. To stop paying for idle time,
+run **Actions → Azure infrastructure → Run workflow** and pick an `action` (the workflow is manual-only;
+the `production` environment's branch policy and reviewers still apply):
+
+| `action` | What it does | Cost while stopped | Reversible? |
+|---|---|---|---|
+| `setup` | Starts a deallocated VM, or triggers the full deploy pipeline if the stack is missing | – | – |
+| `teardown` | **Deallocates** the VM (`az vm deallocate`) | OS disk ~$3 + static IP ~$3.65 + backup ~$6–7 (≈$12–15/mo) | Yes — run `setup`; data, DNS name and Caddy certs are kept |
+| `delete` | Deletes the whole resource group (VM, disk, IP, network, backup vault) | $0 | Irreversible — see below |
+
+- `setup` is idempotent: a running VM is just re-smoke-tested; a deallocated one is started and the
+  containers come back on their own (`restart: unless-stopped`); if the group is gone it reuses
+  `deploy.yml` to rebuild everything.
+- `delete` **destroys local accounts, per-user settings and backup history**. It requires you to type the
+  resource group name into the `confirm` input. The public IP's Azure DNS name is derived from the
+  resource group id, so a later `setup` recreates the *same hostname* (Let's Encrypt reuses the cert on
+  disk after a `teardown`; a `delete` gets a new one) with a fresh bootstrap admin from the repo
+  variables. Entra/Google sign-in config and admins are re-applied on first boot.
+- A `teardown`/`delete` never runs at the same time as a push deploy: both share the `deploy-production`
+  concurrency group.
+
 ## Deploying with a company (CapTech) account
 Hosting (this subscription) and sign-in (which directory's accounts are accepted) are independent: you
 can host here while letting a company's employees sign in, by registering the Entra app in *their*
