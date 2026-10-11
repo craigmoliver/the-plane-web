@@ -37,19 +37,19 @@ permissions:
   packages: write
   id-token: write   # OIDC sign-in to Azure (no stored Azure credentials)
 
-# Concurrency is set per job below, NOT at workflow level, on purpose: a workflow-level lock is held
-# for the whole run, so the `setup-redeploy` job could never acquire deploy.yml's own
-# `deploy-production` lock while calling it -- a deadlock. Jobs and workflows share a concurrency
-# group, so the per-job locks still serialize against push deploys. `setup-redeploy` carries none of
-# its own; it inherits deploy.yml's.
+# One lock for the whole run: this makes `setup` atomic (a queued teardown/delete can't slip in
+# between detection and the action it picked) and serializes every Azure operation against push
+# deploys. The nested `deploy.yml` call runs under a distinct group (passed below) so it doesn't wait
+# on the lock this workflow is holding.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
 jobs:
   setup-detect:
     # Skip until Azure is configured (docs/azure.md), so the workflow is inert otherwise.
     if: vars.AZURE_CLIENT_ID != '' && inputs.action == 'setup'
     runs-on: ubuntu-latest
-    concurrency:
-      group: deploy-production
-      cancel-in-progress: false
     environment:
       name: production
     outputs:
@@ -85,9 +85,6 @@ jobs:
     needs: setup-detect
     if: needs.setup-detect.outputs.vm_exists == 'true'
     runs-on: ubuntu-latest
-    concurrency:
-      group: deploy-production
-      cancel-in-progress: false
     environment:
       name: production
     steps:
@@ -125,19 +122,18 @@ jobs:
 
   setup-redeploy:
     # Infra is gone (or never created): run the normal test -> image -> Bicep -> Run Command pipeline.
-    # Carries no concurrency of its own; deploy.yml acquires `deploy-production` itself (see the note
-    # above the `jobs:` key).
+    # The distinct concurrency group is essential: this workflow holds `deploy-production` for its
+    # whole run, so deploy.yml must use a different group or the nested run would wait on it forever.
     needs: setup-detect
     if: needs.setup-detect.outputs.vm_exists != 'true'
     uses: ./.github/workflows/deploy.yml
+    with:
+      concurrency_group: deploy-production-rebuild
     secrets: inherit
 
   teardown:
     if: vars.AZURE_CLIENT_ID != '' && inputs.action == 'teardown'
     runs-on: ubuntu-latest
-    concurrency:
-      group: deploy-production
-      cancel-in-progress: false
     environment:
       name: production
     steps:
@@ -167,9 +163,6 @@ jobs:
   delete:
     if: vars.AZURE_CLIENT_ID != '' && inputs.action == 'delete'
     runs-on: ubuntu-latest
-    concurrency:
-      group: deploy-production
-      cancel-in-progress: false
     environment:
       name: production
     steps:

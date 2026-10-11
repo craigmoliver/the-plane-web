@@ -9,6 +9,14 @@ on:
     branches: [main]
   workflow_dispatch:
   workflow_call:   # called by infra.yml's `setup` action when the stack has to be rebuilt
+    inputs:
+      concurrency_group:
+        description: >-
+          Concurrency group for this run. infra.yml holds `deploy-production` for its whole run, so it
+          passes a distinct group to avoid the nested run deadlocking on its caller's lock.
+        type: string
+        required: false
+        default: deploy-production
 
 permissions:
   contents: read
@@ -16,7 +24,9 @@ permissions:
   id-token: write   # OIDC sign-in to Azure (no stored Azure credentials)
 
 concurrency:
-  group: deploy-production
+  # Push/workflow_dispatch use the default `deploy-production`. When called by infra.yml -- which
+  # holds `deploy-production` for its entire run -- a distinct group avoids waiting on that lock.
+  group: ${{ inputs.concurrency_group || 'deploy-production' }}
   cancel-in-progress: false
 
 jobs:
