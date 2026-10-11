@@ -1,8 +1,10 @@
 @page "/wall"
 @using PlaneWeb.Core
+@using PlaneWeb.Infrastructure.Providers
 @using PlaneWeb.Infrastructure.Services
 @inherits UserFeedComponent
 @inject IJSRuntime JS
+@inject AircraftInfoService AircraftInfo
 
 <PageTitle>@(s?.Title ?? "The Plane Web")</PageTitle>
 
@@ -84,12 +86,26 @@
                             <span class="led dim small">@(v.Route?.Destination.City ?? v.Route?.Destination.Name)</span>
                         </div>
                     </div>
+                    @if (v.Route is { Stops.Count: > 2 } multi)
+                    {
+                        <div class="led dim small fc-stops">VIA @string.Join(" › ", multi.Stops.Select(a => a.Code))</div>
+                    }
                     <div class="fc-stats">
                         <div><span class="led dim small">ALTITUDE</span><span class="led cyan">@Fmt.Climb(v.Aircraft.VerticalRateFpm) @Fmt.Alt(v.Aircraft, s.Units)</span></div>
                         <div><span class="led dim small">SPEED</span><span class="led cyan">@Fmt.Speed(v.Aircraft.GroundSpeedKt, s.Units)</span></div>
                         <div><span class="led dim small">HEADING</span><span class="led cyan">@Fmt.Heading(v.Aircraft.TrackDeg)</span></div>
                         <div><span class="led dim small">REMAINING</span><span class="led white">@Fmt.Dist(v.RemainingNm, s.Units)</span></div>
                         <div><span class="led dim small">ETA (EST)</span><span class="led amber">@Fmt.Eta(v.EstimatedArrival, DateTimeOffset.UtcNow)</span></div>
+                    </div>
+                    <div class="fc-details">
+                        @foreach (var (label, value) in LiveDetails(v))
+                        {
+                            <div><span class="led dim small">@label</span><span class="led white small">@value</span></div>
+                        }
+                        @foreach (var (label, value) in IdentityDetails(v.Aircraft))
+                        {
+                            <div><span class="led dim small">@label</span><span class="led white small">@value</span></div>
+                        }
                     </div>
                 }
             </div>
@@ -112,6 +128,11 @@
     private WallSnapshot snap => Snapshot;
     private int pageIndex;
     private Timer? rotateTimer, clockTimer;
+    // Airframe registry details (manufacturer, model, owner, country) per hex. Unsuccessful lookups are
+    // retried once the service's miss lifetime has passed, so a transient upstream outage heals itself.
+    private readonly Dictionary<string, InfoEntry> infos = new(StringComparer.OrdinalIgnoreCase);
+    private sealed record InfoEntry(AircraftInfo? Info, DateTimeOffset LoadedAt);
+    private readonly HashSet<string> infoLoading = new(StringComparer.OrdinalIgnoreCase);
 
     protected override async Task OnInitializedAsync()
     {
@@ -119,6 +140,78 @@
         if (IsDisposed) return; // closed while loading: don't start timers nobody will stop
         StartRotation();
         clockTimer = new Timer(_ => InvokeAsync(StateHasChanged), null, 1000, 1000);
+        PrefetchInfo();
+    }
+
+    protected override Task OnSnapshotAsync()
+    {
+        PrefetchInfo();
+        return Task.CompletedTask;
+    }
+
+    /// <summary>Look up registry details for the tracked flights, in the background (cached by the service).</summary>
+    private void PrefetchInfo()
+    {
+        foreach (var live in snap.Tracked.Select(t => t.Live).OfType<FlightView>())
+        {
+            var hex = live.Aircraft.Hex;
+            if (!NeedsInfo(hex) || !infoLoading.Add(hex)) continue;
+            var reg = live.Aircraft.Registration;
+            _ = LoadInfoAsync(hex, reg);
+        }
+    }
+
+    /// <summary>True when there is no usable result yet: never looked up, or a miss older than the service's miss lifetime.</summary>
+    private bool NeedsInfo(string hex)
+    {
+        if (!infos.TryGetValue(hex, out var known)) return true;
+        if (known.Info is { RegistryFound: true }) return false;
+        return DateTimeOffset.UtcNow - known.LoadedAt >= AircraftInfoService.MissTtl;
+    }
+
+    private async Task LoadInfoAsync(string hex, string? reg)
+    {
+        AircraftInfo? info = null;
+        // Registry only: the wall shows no photo, so skip the Planespotters request.
+        try { info = await AircraftInfo.GetRegistryAsync(hex, reg, CancellationToken.None); }
+        catch (Exception) { /* upstream failures are non-fatal: the card just omits the extra fields */ }
+        if (IsDisposed) return;
+        await InvokeAsync(() =>
+        {
+            infos[hex] = new InfoEntry(info, DateTimeOffset.UtcNow);
+            infoLoading.Remove(hex);
+            StateHasChanged();
+        });
+    }
+
+    private IEnumerable<(string Label, string Value)> LiveDetails(FlightView v)
+    {
+        var a = v.Aircraft;
+        var units = s!.Units;
+        yield return ("VERT RATE", a.VerticalRateFpm is { } vr ? $"{Fmt.Climb(vr)} {(units == UnitSystem.Metric ? $"{vr * 0.00508:0.0} m/s" : $"{vr:N0} fpm")}" : "---");
+        yield return ("DISTANCE", v.DistanceNm is { } d ? $"{Fmt.Dist(d, units)}{(v.BearingDeg is { } b ? $" {Geo.CompassPoint(b)}" : "")}" : "---");
+        yield return ("SQUAWK", a.Squawk ?? "---");
+        yield return ("POSITION", a.Position is { } p ? $"{p.Lat:0.0000}, {p.Lon:0.0000}" : "---");
+    }
+
+    private IEnumerable<(string Label, string Value)> IdentityDetails(Aircraft a)
+    {
+        var d = infos.TryGetValue(a.Hex, out var known) ? known.Info : null;
+        string? Pick(params string?[] xs) => xs.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x));
+        var rows = new (string, string?)[]
+        {
+            ("ICAO HEX", a.Hex.ToUpperInvariant()),
+            ("REGISTRATION", Pick(d?.Registration, a.Registration)),
+            ("TYPE CODE", Pick(d?.IcaoType, a.TypeCode)),
+            ("MANUFACTURER", d?.Manufacturer),
+            ("MODEL", d?.Type),
+            ("OWNER", Pick(d?.Owner, a.Operator)),
+            ("COUNTRY", d?.OwnerCountry),
+            ("OPERATOR CODE", d?.OperatorFlag),
+            ("CATEGORY", Fmt.CategoryName(a.Category)),
+        };
+        foreach (var (label, value) in rows)
+            if (!string.IsNullOrWhiteSpace(value)) yield return (label, value!);
     }
 
     private void StartRotation()

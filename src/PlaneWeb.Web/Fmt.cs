@@ -31,6 +31,17 @@ public static class Fmt
 
     public static string Type(Aircraft a) => a.Description ?? a.TypeCode ?? (a.IsHelicopter ? "HELICOPTER" : "UNKNOWN TYPE");
 
+    /// <summary>ADS-B emitter category (e.g. A3) to a readable weight class; unknown codes are returned as-is.</summary>
+    public static string? CategoryName(string? c) => c switch
+    {
+        null or "" => null,
+        "A1" => "Light (< 15,500 lb)", "A2" => "Small (15,500–75,000 lb)", "A3" => "Large (75,000–300,000 lb)",
+        "A4" => "High-vortex large (B757)", "A5" => "Heavy (> 300,000 lb)", "A6" => "High performance", "A7" => "Rotorcraft",
+        "B1" => "Glider / sailplane", "B2" => "Lighter-than-air", "B4" => "Ultralight", "B6" => "UAV / drone",
+        "C1" => "Surface emergency vehicle", "C2" => "Surface service vehicle",
+        _ => c,
+    };
+
     public static string Eta(DateTimeOffset? eta, DateTimeOffset now)
     {
         if (eta is not { } e) return "--:--";

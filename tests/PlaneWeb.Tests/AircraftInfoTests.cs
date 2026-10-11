@@ -70,6 +70,54 @@ public class AircraftInfoTests
         Assert.Null(await svc.GetAsync("../etc", null, default));
     }
 
+    [Fact]
+    public async Task RegistryOnly_SkipsPhotoRequest_ReusesFullEntry_AndCoalesces()
+    {
+        var db = new Handler(Adsbdb, 30);
+        var ps = new Handler(Spotters);
+        var svc = new AircraftInfoService(
+            new HttpClient(db) { BaseAddress = new Uri("https://db/") },
+            new HttpClient(ps) { BaseAddress = new Uri("https://ps/") },
+            TimeProvider.System, Microsoft.Extensions.Logging.Abstractions.NullLogger<AircraftInfoService>.Instance);
+
+        var results = await Task.WhenAll(Enumerable.Range(0, 5).Select(_ => svc.GetRegistryAsync("ACF84E", null, default)));
+        Assert.All(results, r => { Assert.Equal("N935AT", r!.Registration); Assert.Null(r.Photo); });
+        Assert.Equal(1, db.Calls);
+        Assert.Equal(0, ps.Calls);
+
+        // A later full lookup still fetches the photo (registry-only results are not served as full ones)...
+        var full = await svc.GetAsync("ACF84E", null, default);
+        Assert.NotNull(full!.Photo);
+        Assert.Equal(1, ps.Calls);
+        // ...and once a full entry exists, registry-only callers reuse it without another upstream call.
+        var dbCalls = db.Calls;
+        Assert.NotNull((await svc.GetRegistryAsync("ACF84E", null, default))!.Photo);
+        Assert.Equal(dbCalls, db.Calls);
+    }
+
+    [Fact]
+    public async Task RegistryOnly_DoesNotReusePhotoOnlyFullEntry()
+    {
+        // adsbdb is down but Planespotters answers: the full lookup is "found" (photo) without registry data.
+        var db = new Handler("not json");
+        var ps = new Handler(Spotters);
+        var svc = new AircraftInfoService(
+            new HttpClient(db) { BaseAddress = new Uri("https://db/") },
+            new HttpClient(ps) { BaseAddress = new Uri("https://ps/") },
+            TimeProvider.System, Microsoft.Extensions.Logging.Abstractions.NullLogger<AircraftInfoService>.Instance);
+
+        var full = await svc.GetAsync("ACF84E", "N935AT", default);
+        Assert.NotNull(full!.Photo);
+        Assert.True(full.Found);
+        Assert.False(full.RegistryFound);
+
+        var dbCalls = db.Calls;
+        var reg = await svc.GetRegistryAsync("ACF84E", "N935AT", default);
+        Assert.Null(reg!.Photo);
+        Assert.False(reg.RegistryFound);
+        Assert.Equal(dbCalls + 1, db.Calls); // fell through to its own registry lookup instead of reusing the photo-only entry
+    }
+
     private sealed class Failing : HttpMessageHandler
     {
         public int Calls;

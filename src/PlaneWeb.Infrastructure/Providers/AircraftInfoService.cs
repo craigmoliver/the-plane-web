@@ -21,6 +21,8 @@ public sealed record AircraftInfo
     public AircraftPhoto? Photo { get; init; }
     /// <summary>False when neither upstream returned data (only the caller's hints are present).</summary>
     [System.Text.Json.Serialization.JsonIgnore] public bool Found { get; init; }
+    /// <summary>True only when the adsbdb registry lookup itself succeeded (a photo alone does not count).</summary>
+    [System.Text.Json.Serialization.JsonIgnore] public bool RegistryFound { get; init; }
 }
 
 /// <summary>
@@ -29,18 +31,37 @@ public sealed record AircraftInfo
 /// </summary>
 public sealed class AircraftInfoService(HttpClient adsbdb, HttpClient planespotters, TimeProvider time, ILogger<AircraftInfoService> log)
 {
-    private static readonly TimeSpan HitTtl = TimeSpan.FromHours(12), MissTtl = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan HitTtl = TimeSpan.FromHours(12);
+    /// <summary>How long a miss/failure is cached; callers that want to retry should wait at least this long.</summary>
+    public static readonly TimeSpan MissTtl = TimeSpan.FromMinutes(30);
     private const int MaxEntries = 2000;
     private readonly ConcurrentDictionary<string, (DateTimeOffset Expires, Lazy<Task<AircraftInfo>> Value)> _cache = new(StringComparer.OrdinalIgnoreCase);
 
-    public async Task<AircraftInfo?> GetAsync(string hex, string? registration, CancellationToken ct)
+    public Task<AircraftInfo?> GetAsync(string hex, string? registration, CancellationToken ct) =>
+        GetAsync(hex, registration, includePhoto: true, ct);
+
+    /// <summary>
+    /// Registry details only (no Planespotters photo request). Reuses a cached full lookup when one exists;
+    /// otherwise uses its own cache entry, with the same coalescing and hit/miss lifetimes.
+    /// </summary>
+    public Task<AircraftInfo?> GetRegistryAsync(string hex, string? registration, CancellationToken ct) =>
+        GetAsync(hex, registration, includePhoto: false, ct);
+
+    private async Task<AircraftInfo?> GetAsync(string hex, string? registration, bool includePhoto, CancellationToken ct)
     {
         hex = hex.Trim().ToLowerInvariant();
         if (hex.Length is < 2 or > 8 || !hex.All(Uri.IsHexDigit)) return null;
         registration = string.IsNullOrWhiteSpace(registration) ? null : registration.Trim().ToUpperInvariant();
         // The registration hint changes the result (fallback registration, photo lookup), so it is part of the key.
-        var key = $"{hex}|{registration}";
+        var fullKey = $"{hex}|{registration}";
         var now = time.GetUtcNow();
+        // A registry-only caller can use an existing full entry, but a full caller needs its own (photo) entry.
+        // Only reuse it when it already finished with a successful registry lookup: a photo-only result
+        // (adsbdb down, Planespotters up) must not be served as registry data.
+        if (!includePhoto && _cache.TryGetValue(fullKey, out var full) && full.Expires > now &&
+            full.Value.IsValueCreated && full.Value.Value is { IsCompletedSuccessfully: true, Result.RegistryFound: true } done)
+            return done.Result;
+        var key = includePhoto ? fullKey : $"{fullKey}|registry";
         if (_cache.TryGetValue(key, out var e) && e.Expires > now) return await e.Value.Value.WaitAsync(ct);
 
         if (_cache.Count >= MaxEntries)
@@ -55,7 +76,7 @@ public sealed class AircraftInfoService(HttpClient adsbdb, HttpClient planespott
         Lazy<Task<AircraftInfo>>? lazy = null;
         lazy = new Lazy<Task<AircraftInfo>>(async () =>
         {
-            var info = await FetchAsync(hex, registration);
+            var info = await FetchAsync(hex, registration, includePhoto);
             // Finalize the lifetime when the shared fetch completes, regardless of which callers are still waiting:
             // shorten it when nothing useful came back, and only if this entry hasn't been replaced.
             if (!info.Found && _cache.TryGetValue(key, out var cur) && ReferenceEquals(cur.Value, lazy))
@@ -67,7 +88,7 @@ public sealed class AircraftInfoService(HttpClient adsbdb, HttpClient planespott
         return await entry.Value.Value.WaitAsync(ct);
     }
 
-    private async Task<AircraftInfo> FetchAsync(string hex, string? registration)
+    private async Task<AircraftInfo> FetchAsync(string hex, string? registration, bool includePhoto)
     {
         // Shared fetch, so not tied to one caller's token. Each upstream gets its own deadline,
         // so a slow registry lookup can't use up the photo lookup's time.
@@ -76,10 +97,12 @@ public sealed class AircraftInfoService(HttpClient adsbdb, HttpClient planespott
         try
         {
             info = ParseAdsbdb(hex, await adsbdb.GetStringAsync($"v0/aircraft/{hex}", cts.Token)) is { } parsed
-                ? parsed with { Registration = parsed.Registration ?? registration, Found = true } : info;
+                ? parsed with { Registration = parsed.Registration ?? registration, Found = true, RegistryFound = true } : info;
         }
         catch (Exception ex) when (ex is not OperationCanceledException || cts.IsCancellationRequested)
         { log.LogDebug(ex, "adsbdb lookup failed for {Hex}", hex); }
+
+        if (!includePhoto) return info;
 
         using var photoCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         try
