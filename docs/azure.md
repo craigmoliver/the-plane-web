@@ -108,6 +108,37 @@ Create an environment named **production**. Under **Deployment branches and tags
 Then run **Actions → Deploy to Azure → Run workflow**. The run summary prints the URL and the Entra/Google redirect URIs;
 add the Entra one to the Entra app registration (docs/entra.md) and the Google one to the Google OAuth client (docs/google.md).
 
+## Saving cost: setup / teardown
+The stack bills around the clock whether or not anyone is watching it. To stop paying for idle time,
+run **Actions → Azure infrastructure → Run workflow** and pick an `action` (the workflow is manual-only;
+the `production` environment's branch policy and reviewers still apply):
+
+| `action` | What it does | Cost while stopped | Reversible? |
+|---|---|---|---|
+| `setup` | Starts a deallocated VM, or triggers the full deploy pipeline if the stack is missing | – | – |
+| `teardown` | **Deallocates** the VM (`az vm deallocate`) | OS disk ~$3 + static IP ~$3.65 + backup ~$6–7 (≈$12–15/mo) | Yes — run `setup`; data, DNS name and Caddy certs are kept |
+| `delete` | Removes the VM, disk, NIC, NSG, VNet and backup protection, but **keeps the resource group and the static public IP** | ~$3.65/mo (the retained IP) | Irreversible for data — see below |
+
+- `setup` is idempotent: a running VM is just re-smoke-tested; a deallocated one is started and the
+  containers come back on their own (`restart: unless-stopped`); if the VM is gone it reuses
+  `deploy.yml` to rebuild the stack in place.
+- `delete` **destroys local accounts, per-user settings and backup history**, and requires you to type
+  the resource group name into the `confirm` input. Two things are deliberately kept:
+  - the **resource group**, because the deploy identity's role assignment is scoped to it (deleting the
+    group would leave the identity unable to rebuild);
+  - the **static public IP**, because deleting it releases its `*.cloudapp.azure.com` label, which
+    another tenant could then claim, and the Entra/Google redirect URIs point at it. It costs
+    ~$3.65/month while the stack is down.
+
+  A later `setup` recreates the *same hostname* with a fresh bootstrap admin from the repo variables;
+  Entra/Google sign-in config and admins are re-applied on first boot.
+- Azure Backup vaults are secure-by-default: soft delete is locked to *AlwaysOn* and can't be disabled,
+  so `delete` stops protection (ending the protected-instance fee) but may leave the vault with its
+  soft-deleted recovery points until Azure ages them out (deferred cleanup). An empty vault costs
+  nothing; storage for the retained recovery points bills briefly.
+- A `teardown`/`delete` never runs at the same time as a push deploy: both share the `deploy-production`
+  concurrency group.
+
 ## Deploying with a company (CapTech) account
 Hosting (this subscription) and sign-in (which directory's accounts are accepted) are independent: you
 can host here while letting a company's employees sign in, by registering the Entra app in *their*
