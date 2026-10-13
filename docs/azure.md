@@ -117,17 +117,25 @@ the `production` environment's branch policy and reviewers still apply):
 |---|---|---|---|
 | `setup` | Starts a deallocated VM, or triggers the full deploy pipeline if the stack is missing | – | – |
 | `teardown` | **Deallocates** the VM (`az vm deallocate`) | OS disk ~$3 + static IP ~$3.65 + backup ~$6–7 (≈$12–15/mo) | Yes — run `setup`; data, DNS name and Caddy certs are kept |
-| `delete` | Removes the stack's billable resources (VM, disk, NIC, NSG, VNet, public IP, backup vault) but **keeps the resource group** | $0 | Irreversible for data — see below |
+| `delete` | Removes the VM, disk, NIC, NSG, VNet and backup protection, but **keeps the resource group and the static public IP** | ~$3.65/mo (the retained IP) | Irreversible for data — see below |
 
 - `setup` is idempotent: a running VM is just re-smoke-tested; a deallocated one is started and the
   containers come back on their own (`restart: unless-stopped`); if the VM is gone it reuses
   `deploy.yml` to rebuild the stack in place.
 - `delete` **destroys local accounts, per-user settings and backup history**, and requires you to type
-  the resource group name into the `confirm` input. It deliberately keeps the (empty) resource group:
-  the deploy identity's role assignment is scoped to it, so deleting the group would leave the identity
-  unable to rebuild. An empty group costs nothing, and a later `setup` recreates the *same hostname*
-  (the public IP's DNS label is derived from the resource group id) with a fresh bootstrap admin from
-  the repo variables. Entra/Google sign-in config and admins are re-applied on first boot.
+  the resource group name into the `confirm` input. Two things are deliberately kept:
+  - the **resource group**, because the deploy identity's role assignment is scoped to it (deleting the
+    group would leave the identity unable to rebuild);
+  - the **static public IP**, because deleting it releases its `*.cloudapp.azure.com` label, which
+    another tenant could then claim, and the Entra/Google redirect URIs point at it. It costs
+    ~$3.65/month while the stack is down.
+
+  A later `setup` recreates the *same hostname* with a fresh bootstrap admin from the repo variables;
+  Entra/Google sign-in config and admins are re-applied on first boot.
+- Azure Backup vaults are secure-by-default: soft delete is locked to *AlwaysOn* and can't be disabled,
+  so `delete` stops protection (ending the protected-instance fee) but may leave the vault with its
+  soft-deleted recovery points until Azure ages them out (deferred cleanup). An empty vault costs
+  nothing; storage for the retained recovery points bills briefly.
 - A `teardown`/`delete` never runs at the same time as a push deploy: both share the `deploy-production`
   concurrency group.
 

@@ -8,10 +8,12 @@ name: Azure infrastructure
 #   teardown  Deallocate the VM. Cheapest reversible stop: compute billing ends, but the OS disk,
 #             static public IP and backup vault remain (~$12-15/month). Data, DNS name and Caddy
 #             certificates are preserved, so a later `setup` brings it back in seconds.
-#   delete    Remove the stack's billable resources (VM, disk, NIC, NSG, VNet, public IP, backup
-#             vault) but keep the resource group itself, so all charges stop while the deploy
-#             identity's role assignment survives and `setup` can rebuild the same stack. This
-#             destroys local data (fresh bootstrap on rebuild). Requires the `confirm` input below.
+#   delete    Remove the stack's billable resources (VM, disk, NIC, NSG, VNet, backup vault) but keep
+#             the resource group and the static public IP. Keeping the IP reserves its
+#             *.cloudapp.azure.com hostname (so another tenant can't claim it and the OAuth redirects
+#             keep working); keeping the group preserves the deploy identity's role assignment, so
+#             `setup` rebuilds the same stack. Destroys local data (fresh bootstrap on rebuild).
+#             Requires the `confirm` input below.
 #
 # Reuses the deploy pipeline (deploy.yml) for the rebuild path rather than duplicating it.
 on:
@@ -199,7 +201,7 @@ jobs:
           fi
 
           VM=planeweb-vm; NIC=planeweb-nic; NSG=planeweb-nsg
-          VNET=planeweb-vnet; IP=planeweb-ip; VAULT=planeweb-vault
+          VNET=planeweb-vnet; VAULT=planeweb-vault
 
           # Echo a resource's id, or nothing if it is absent. Captured into a variable (never used
           # directly as an `if` condition) so a transient CLI error aborts the step under `set -e`
@@ -235,19 +237,27 @@ jobs:
             echo "Deleting VNet $VNET..."
             az network vnet delete -g "$RG" -n "$VNET" -o none
           fi
-          ip_id=$(resource_id "$IP")
-          if [ -n "$ip_id" ]; then
-            echo "Deleting public IP $IP..."
-            az network public-ip delete -g "$RG" -n "$IP" -o none
-          fi
+          # The static public IP is intentionally retained: deleting it releases its
+          # *.cloudapp.azure.com label, which another tenant could then claim, and the Entra/Google
+          # redirect URIs point at it. It is the only charge that remains while deleted (~$3.65/month).
+          echo "Retaining public IP 'planeweb-ip' to reserve its hostname."
 
-          # Backup: stop protection (deleting the data) before removing the vault. Every command here
-          # fails the step on error on purpose -- suppressing one would let `delete` report success
-          # while the protected item and its recovery points keep billing.
+          # Backup: stop protection (deleting the data) so the protected-instance fee stops. Secure-by-
+          # default vaults lock soft delete to AlwaysOn and reject disabling it, so that step is
+          # best-effort; the vault can then only be removed once Azure ages out the soft-deleted
+          # recovery points, so it is left for deferred cleanup (an empty vault costs nothing).
           vault_id=$(resource_id "$VAULT")
           if [ -n "$vault_id" ]; then
-            az backup vault backup-properties set -g "$RG" -n "$VAULT" \
-              --soft-delete-feature-state Disable -o none
+            if az backup vault backup-properties set -g "$RG" -n "$VAULT" \
+                 --soft-delete-feature-state Disable -o none 2>/dev/null; then
+              soft_delete_locked=false
+            else
+              soft_delete_locked=true
+              echo "Soft delete is locked on vault '$VAULT' (secure-by-default) and can't be disabled."
+            fi
+
+            # This must succeed -- it is what stops the protected-instance fee. Failures are not
+            # suppressed, so a real problem aborts the run instead of reporting a false success.
             az backup item list -g "$RG" -v "$VAULT" \
               --query "[].{name:name,container:properties.containerName}" -o tsv \
               | while IFS=$'\t' read -r item container; do
@@ -256,10 +266,15 @@ jobs:
                   az backup protection disable -g "$RG" -v "$VAULT" -c "$container" -i "$item" \
                     --backup-management-type AzureIaasVM --delete-backup-data true --yes -o none
                 done
-            echo "Deleting vault $VAULT..."
-            az backup vault delete -g "$RG" -n "$VAULT" --force --yes -o none
+
+            if [ "$soft_delete_locked" = "false" ]; then
+              echo "Deleting vault $VAULT..."
+              az backup vault delete -g "$RG" -n "$VAULT" --force --yes -o none
+            else
+              echo "Retaining vault '$VAULT': Azure holds its soft-deleted recovery points (deferred cleanup)."
+            fi
           fi
 
-          echo "Remaining resources in '$RG':"
+          echo "Remaining resources in '$RG' (the resource group and public IP are intentionally kept):"
           az resource list -g "$RG" --query "[].{name:name,type:type}" -o table
-          echo "Stack resources deleted; the resource group and deploy identity are retained so 'setup' can rebuild."
+          echo "Stack resources deleted; the resource group, deploy identity and public IP are retained so 'setup' rebuilds the same hostname."
