@@ -135,7 +135,9 @@ the `production` environment's branch policy and reviewers still apply):
 - Azure Backup vaults are secure-by-default: soft delete is locked to *AlwaysOn* and can't be disabled,
   so `delete` stops protection (ending the protected-instance fee) but may leave the vault with its
   soft-deleted recovery points until Azure ages them out (deferred cleanup). An empty vault costs
-  nothing; storage for the retained recovery points bills briefly.
+  nothing; storage for the retained recovery points bills briefly. Azure won't re-protect a
+  soft-deleted item name until it is undeleted, so `setup`'s rebuild path recovers the retained item
+  first (no-op when nothing is soft-deleted).
 - A `teardown`/`delete` never runs at the same time as a push deploy: both share the `deploy-production`
   concurrency group.
 

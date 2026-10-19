@@ -126,11 +126,54 @@ jobs:
           test "$(curl -s -o /dev/null -w '%{http_code}' "$url/settings")" = 302
           echo "Running: $url"
 
+  setup-reconcile:
+    # A `delete` leaves the VM's backup item soft-deleted (Azure locks soft delete on by default), and
+    # Azure refuses to re-protect that item name until it is undeleted -- which would fail the Bicep
+    # deploy in setup-redeploy. Recover the retained item first. No-op on a first-ever deploy (no vault)
+    # or when nothing is soft-deleted.
+    needs: setup-detect
+    if: needs.setup-detect.outputs.vm_exists != 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    steps:
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Recover a soft-deleted VM backup item
+        run: |
+          set -euo pipefail
+          RG="${{ vars.AZURE_RESOURCE_GROUP }}"
+          VM=planeweb-vm; VAULT=planeweb-vault
+          # The protected item name infra/main.bicep gives the resource.
+          ITEM="vm;iaasvmcontainerv2;${RG};${VM}"
+
+          vault_id=$(az resource list -g "$RG" --query "[?name=='$VAULT'].id | [0]" -o tsv)
+          if [ -z "$vault_id" ]; then
+            echo "No vault '$VAULT'; nothing to reconcile."
+            exit 0
+          fi
+
+          # A soft-deleted item is listed under its (soft-deleted) container; match on the VM name.
+          soft_container=$(az backup vault list-soft-deleted-containers -g "$RG" -n "$VAULT" \
+            --backup-management-type AzureIaasVM \
+            --query "[?properties.friendlyName=='$VM'].name | [0]" -o tsv)
+          if [ -n "$soft_container" ]; then
+            echo "Recovering soft-deleted backup item '$ITEM' so protection can be re-created..."
+            az backup protection undelete -g "$RG" -v "$VAULT" \
+              -c "$soft_container" -i "$ITEM" \
+              --backup-management-type AzureIaasVM --workload-type VM -o none
+          else
+            echo "No soft-deleted backup item for '$VM'; nothing to reconcile."
+          fi
+
   setup-redeploy:
     # Infra is gone (or never created): run the normal test -> image -> Bicep -> Run Command pipeline.
     # The distinct concurrency group is essential: this workflow holds `deploy-production` for its
     # whole run, so deploy.yml must use a different group or the nested run would wait on it forever.
-    needs: setup-detect
+    needs: [setup-detect, setup-reconcile]
     if: needs.setup-detect.outputs.vm_exists != 'true'
     uses: ./.github/workflows/deploy.yml
     with:
