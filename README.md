@@ -66,6 +66,8 @@ Settings are stored in SQLite at `/data/planeweb.db` and flight trails in `/data
 
 ## Deploy to Azure
 See [docs/azure.md](docs/azure.md): a small Linux VM running this same Docker Compose setup (SQLite + Caddy for HTTPS), deployed by GitHub Actions on every push to `main`.
+The **Azure infrastructure** workflow starts (`setup`), stops (`teardown`, deallocates the VM) or tears
+it down (`delete`, keeping the resource group and public IP) manually, to save cost when it isn't in use.
 
 ## Develop
 ```bash
