@@ -39,8 +39,13 @@
         // Settings may load after the first render, so initialize on whichever render first has them.
         if (mapReady || mapInitializing || s is null) return;
         mapInitializing = true;
-        await Clock.EnsureAsync(); // before the first Push, so its summary uses the viewer's zone
-        try { await JS.InvokeVoidAsync("planeWebLiveMap.init", mapEl, AreaState(), s.MapLayer); }
+        try
+        {
+            await Clock.EnsureAsync(); // before the first Push, so its summary uses the viewer's zone
+            // Navigated away during the lookup: the map element is gone, so don't initialize Leaflet on it.
+            if (IsDisposed) return;
+            await JS.InvokeVoidAsync("planeWebLiveMap.init", mapEl, AreaState(), s.MapLayer);
+        }
         finally { mapInitializing = false; }
         mapReady = true;
         await Push();

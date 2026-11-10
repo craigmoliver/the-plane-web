@@ -210,6 +210,8 @@
         if (firstRender && !Clock.IsResolved)
         {
             await Clock.EnsureAsync();
+            // Navigated away during the lookup: don't touch the removed map element or create a JS reference.
+            if (IsDisposed) return;
             UpdateSummary(Snapshot); // the summary was first built in the server's zone
             StateHasChanged();
         }
