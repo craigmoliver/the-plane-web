@@ -4,6 +4,7 @@
 @inherits UserFeedComponent
 @inject TrailStore Trails
 @inject IJSRuntime JS
+@inject ClientTime Clock
 
 <PageTitle>Map · The Plane Web</PageTitle>
 
@@ -38,6 +39,7 @@
         // Settings may load after the first render, so initialize on whichever render first has them.
         if (mapReady || mapInitializing || s is null) return;
         mapInitializing = true;
+        await Clock.EnsureAsync(); // before the first Push, so its summary uses the viewer's zone
         try { await JS.InvokeVoidAsync("planeWebLiveMap.init", mapEl, AreaState(), s.MapLayer); }
         finally { mapInitializing = false; }
         mapReady = true;
@@ -126,7 +128,7 @@
         foreach (var gone in sent.Keys.Except(present, StringComparer.OrdinalIgnoreCase).ToList()) sent.Remove(gone);
 
         summary = snap.UpdatedAt == DateTimeOffset.MinValue ? "Waiting for live data…"
-            : $"{aircraft.Count} aircraft · {onWall.Count} on wall · {s.TrailMinutes} min trails · {snap.Source} · {snap.UpdatedAt.ToLocalTime():HH:mm:ss}";
+            : $"{aircraft.Count} aircraft · {onWall.Count} on wall · {s.TrailMinutes} min trails · {snap.Source} · {Clock.Format(snap.UpdatedAt, "HH:mm:ss")}";
 
         if (!await SafeJs("planeWebLiveMap.update", new
         {

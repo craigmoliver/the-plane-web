@@ -12,7 +12,7 @@
     <div class="wall-header">
         <span class="led amber">@(s?.Title ?? "THE PLANE WEB")</span>
         <span class="led dim">@(snap.Mode == DisplayMode.Area ? "AREA" : "TRACKING")</span>
-        <span class="led green">@DateTime.Now.ToString("HH:mm:ss")</span>
+        <span class="led green"><LocalTime Value="DateTimeOffset.UtcNow" Format="HH:mm:ss" /></span>
     </div>
 
     @if (s is null || snap.UpdatedAt == DateTimeOffset.MinValue)
@@ -118,7 +118,7 @@
 
     <div class="wall-footer led dim small">
         @if (snap.Error is not null) { <span class="led red">⚠ @snap.Error</span> }
-        <span>DATA: @(snap.Source ?? "—") · UPDATED @(snap.UpdatedAt == DateTimeOffset.MinValue ? "—" : snap.UpdatedAt.ToLocalTime().ToString("HH:mm:ss"))</span>
+        <span>DATA: @(snap.Source ?? "—") · UPDATED @if (snap.UpdatedAt == DateTimeOffset.MinValue) { <text>—</text> } else { <LocalTime Value="snap.UpdatedAt" Format="HH:mm:ss" /> }</span>
         <span><a href="/map">MAP</a> · <a href="/settings">SETTINGS</a> · <UserMenu /></span>
     </div>
 </div>
