@@ -17,7 +17,10 @@ public class LoginErrorTests(AppFactory app) : IClassFixture<AppFactory>
         var url = AuthSetup.LoginErrorUrl(dp, "A local account already uses a@b.c.", TimeProvider.System);
         var token = Uri.UnescapeDataString(url["/account/login?error=".Length..]);
         Assert.Equal("A local account already uses a@b.c.", AuthSetup.ReadLoginError(dp, token));
-        Assert.Null(AuthSetup.ReadLoginError(dp, token[..^2] + "AA"));
+        // Flip one character in the middle (the last one may only carry unused padding bits).
+        var i = token.Length / 2;
+        var tampered = token[..i] + (token[i] == 'A' ? 'B' : 'A') + token[(i + 1)..];
+        Assert.Null(AuthSetup.ReadLoginError(dp, tampered));
         Assert.Null(AuthSetup.ReadLoginError(dp, "Your account is locked, call 555-0100"));
         Assert.Null(AuthSetup.ReadLoginError(new EphemeralDataProtectionProvider(), token)); // other keys
         Assert.Null(AuthSetup.ReadLoginError(dp, null));

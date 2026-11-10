@@ -62,8 +62,12 @@
     protected override void OnInitialized() =>
         Message ??= Error is null ? null : AuthSetup.ReadLoginError(DataProtection, Error) ?? "Sign-in failed. Please try again.";
 
-    // Hash of a random password, checked when there is no matching account, so the response takes about
-    // as long as a real password check and doesn't reveal which emails have accounts.
+    // Every failed local sign-in gets this one message: unknown email, work account, wrong password, or a
+    // locked/disabled account. A separate "locked" message would confirm the email has an account.
+    public const string FailedMessage = "Incorrect email or password, or the account is locked. Try again later or ask an admin.";
+
+    // Hash of a random password, checked whenever no real password check happens (no matching account, or a
+    // locked one, where Identity skips the check), so every failure takes about as long as a wrong password.
     private static readonly Lazy<string> DummyHash = new(() =>
         new PasswordHasher<AppUser>().HashPassword(new AppUser(), Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(24))));
 
@@ -75,18 +79,21 @@
         if (user is null || user.IsExternal)
         {
             Users.PasswordHasher.VerifyHashedPassword(user ?? new AppUser(), DummyHash.Value, Input.Password);
-            Message = "Incorrect email or password.";
+            Message = FailedMessage;
             return;
         }
+        // Identity returns LockedOut without checking the password when the account was already locked.
+        var wasLocked = await Users.IsLockedOutAsync(user);
         var r = await SignIn.PasswordSignInAsync(user, Input.Password, Input.Remember, lockoutOnFailure: true);
+        if (wasLocked && !r.Succeeded)
+            Users.PasswordHasher.VerifyHashedPassword(user, DummyHash.Value, Input.Password);
         if (r.Succeeded)
         {
             await Accounts.RecordSignInAsync(user);
             Nav.NavigateTo(user.MustChangePassword ? "/account/change-password" : AuthSetup.SafeReturnUrl(ReturnUrl), forceLoad: true);
             return;
         }
-        Message = r.IsLockedOut ? "This account is locked or disabled. Try again later or ask an admin."
-            : "Incorrect email or password.";
+        Message = FailedMessage;
     }
 
     private sealed class LoginInput
