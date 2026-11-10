@@ -5,6 +5,22 @@
 set -euo pipefail
 umask 077
 
+# Don't leave credentials behind on the VM once this run is over (success or failure):
+#  - the GHCR token that `docker login` below stores in /root/.docker/config.json;
+#  - the copy of this script, with every secret embedded in it, that the Run Command agent downloads
+#    under /var/lib/waagent/run-command/. Unlinking a running bash script is safe (bash keeps it open),
+#    and only that directory is touched, so running the script by hand never deletes it.
+# The app's own secrets stay in /opt/planeweb/secrets.env (mode 600), where Compose needs them.
+cleanup() {
+  docker logout ghcr.io >/dev/null 2>&1 || true
+  local self
+  self=$(readlink -f -- "$0" 2>/dev/null || true)
+  case "$self" in
+    /var/lib/waagent/run-command/*) rm -f -- "$self" ;;
+  esac
+}
+trap cleanup EXIT
+
 # The VM can report "provisioned" while cloud-init (infra/cloud-init.yaml) is still installing Docker
 # on first boot; wait for it to finish (success or failure) before trying to use docker/compose.
 if ! cloud-init status --wait >/dev/null; then
