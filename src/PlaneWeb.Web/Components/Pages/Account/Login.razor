@@ -11,6 +11,7 @@
 @inject AccountService Accounts
 @inject IOptions<AuthOptions> AuthOpts
 @inject NavigationManager Nav
+@inject Microsoft.AspNetCore.DataProtection.IDataProtectionProvider DataProtection
 
 <PageTitle>Sign in · The Plane Web</PageTitle>
 
@@ -57,7 +58,14 @@
     [SupplyParameterFromQuery(Name = "error")] private string? Error { get; set; }
     private string? Message;
 
-    protected override void OnInitialized() => Message ??= Error;
+    // Only messages this app issued (see AuthSetup.LoginErrorUrl) are shown; anything else in ?error= gets a generic one.
+    protected override void OnInitialized() =>
+        Message ??= Error is null ? null : AuthSetup.ReadLoginError(DataProtection, Error) ?? "Sign-in failed. Please try again.";
+
+    // Hash of a random password, checked when there is no matching account, so the response takes about
+    // as long as a real password check and doesn't reveal which emails have accounts.
+    private static readonly Lazy<string> DummyHash = new(() =>
+        new PasswordHasher<AppUser>().HashPassword(new AppUser(), Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(24))));
 
     private async Task LoginAsync()
     {
@@ -66,6 +74,7 @@
         // Work accounts have no password; give the same message as a wrong password.
         if (user is null || user.IsExternal)
         {
+            Users.PasswordHasher.VerifyHashedPassword(user ?? new AppUser(), DummyHash.Value, Input.Password);
             Message = "Incorrect email or password.";
             return;
         }
