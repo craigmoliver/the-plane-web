@@ -31,7 +31,11 @@ public sealed class PollerRegistry(
     ILogger<PollerRegistry> log) : BackgroundService
 {
     public static readonly TimeSpan Linger = TimeSpan.FromMinutes(2);
-    /// <summary>Above this many pollers, idle ones are stopped immediately instead of lingering.</summary>
+    /// <summary>
+    /// Soft limit: when starting a poller would exceed this, idle (unleased, unpinned) pollers are stopped at once
+    /// instead of lingering. Pollers that someone is viewing are never stopped, so with more distinct areas in use
+    /// than this, the count goes above it.
+    /// </summary>
     public const int MaxPollers = 20;
 
     private sealed class Poller

@@ -25,8 +25,13 @@ public sealed class TraceBackfillService(
     private readonly Dictionary<string, DateTimeOffset> _attempted = new(StringComparer.OrdinalIgnoreCase);
     private readonly Lock _lock = new();
 
-    /// <summary>Mirrors the TraceBackfill setting; when false, queued lookups are skipped instead of requested.</summary>
-    public bool Enabled { get; set; } = true;
+    private volatile bool _enabled = true;
+
+    /// <summary>
+    /// Mirrors the TraceBackfill setting; when false, queued lookups are skipped instead of requested.
+    /// Set by the poller registry and read by this service's worker, so it is volatile.
+    /// </summary>
+    public bool Enabled { get => _enabled; set => _enabled = value; }
 
     /// <summary>Queues a lookup unless this hex was tried recently. Returns true if queued.</summary>
     public bool Enqueue(string hex)
