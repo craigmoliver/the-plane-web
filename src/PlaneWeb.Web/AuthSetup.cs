@@ -210,21 +210,19 @@ public static class AuthSetup
         {
             if (!await af.IsRequestValidAsync(ctx)) return PlainBadRequest(ctx);
             if (!IsEnabledProvider(provider, opt.Value)) return Results.NotFound();
-            var props = new AuthenticationProperties
-            {
-                RedirectUri = $"/account/external-callback?provider={Uri.EscapeDataString(provider)}&returnUrl={Uri.EscapeDataString(SafeReturnUrl(returnUrl))}",
-            };
-            return Results.Challenge(props, [provider]);
+            return Results.Challenge(ChallengeProperties(provider, returnUrl), [provider]);
         }).AllowAnonymous().RequireRateLimiting(LoginRateLimit);
 
-        account.MapGet("/external-callback", async (HttpContext ctx, string provider, string? returnUrl, AccountService accounts,
+        account.MapGet("/external-callback", async (HttpContext ctx, string? returnUrl, AccountService accounts,
             SignInManager<AppUser> signIn, IOptions<AuthOptions> opt, IDbContextFactory<PlaneWebDbContext> dbFactory) =>
         {
-            if (!IsEnabledProvider(provider, opt.Value))
-                return Results.LocalRedirect("/account/login?error=" + Uri.EscapeDataString("Sign-in refused."));
             var result = await ctx.AuthenticateAsync(IdentityConstants.ExternalScheme);
             await ctx.SignOutAsync(IdentityConstants.ExternalScheme);
             if (!result.Succeeded) return Results.LocalRedirect("/account/login?error=" + Uri.EscapeDataString("Sign-in failed."));
+            // Which provider signed this user in comes from the protected external ticket, never from the
+            // query string, so a Google sign-in can't be fed to the Microsoft code path or vice versa.
+            if (IssuingProvider(result.Properties, opt.Value) is not { } provider)
+                return Results.LocalRedirect("/account/login?error=" + Uri.EscapeDataString("Sign-in refused."));
 
             AppUser? user; string? error;
             if (provider == AccountService.EntraProvider)
@@ -247,6 +245,27 @@ public static class AuthSetup
             return Results.LocalRedirect(SafeReturnUrl(returnUrl));
         }).AllowAnonymous().RequireRateLimiting(LoginRateLimit);
     }
+
+    /// <summary>Key under which the challenge records its provider; the same one ASP.NET Core Identity uses.</summary>
+    public const string LoginProviderKey = "LoginProvider";
+
+    /// <summary>
+    /// Properties for an external sign-in challenge. They travel inside the provider's protected state and end
+    /// up in the external cookie, so the callback can tell which provider actually authenticated the user.
+    /// </summary>
+    public static AuthenticationProperties ChallengeProperties(string provider, string? returnUrl)
+    {
+        var props = new AuthenticationProperties
+        {
+            RedirectUri = $"/account/external-callback?returnUrl={Uri.EscapeDataString(SafeReturnUrl(returnUrl))}",
+        };
+        props.Items[LoginProviderKey] = provider;
+        return props;
+    }
+
+    /// <summary>The enabled provider recorded in an external sign-in ticket, or null if there is none.</summary>
+    public static string? IssuingProvider(AuthenticationProperties? props, AuthOptions o) =>
+        props?.Items.TryGetValue(LoginProviderKey, out var p) == true && p is not null && IsEnabledProvider(p, o) ? p : null;
 
     private static bool IsEnabledProvider(string provider, AuthOptions o) =>
         (provider == AccountService.EntraProvider && o.Entra.Enabled) ||
