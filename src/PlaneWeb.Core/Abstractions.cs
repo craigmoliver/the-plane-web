@@ -68,14 +68,28 @@ public sealed class WallSettings
     /// <summary>Largest radius the ADS-B providers accept in one query.</summary>
     public const double MaxQueryRadiusNm = 250;
 
+    /// <summary>Most vertices a drawn area may have (it is tested against every aircraft on every poll).</summary>
+    public const int MaxPolygonPoints = 200;
+
     /// <summary>Returns a user-facing validation error, or null if the settings are usable.</summary>
     public string? Validate()
     {
-        if (Shape == AreaShape.Polygon && Polygon is { Count: >= 3 } poly &&
+        if (!IsValidLat(CenterLat) || !IsValidLon(CenterLon))
+            return "The center must be a real location (latitude −90 to 90, longitude −180 to 180).";
+        // Checked in every mode: a leftover polygon is stored too, and the client can send anything.
+        var points = Polygon;
+        if (points.Count > MaxPolygonPoints)
+            return $"The drawn area has too many points ({points.Count}); use at most {MaxPolygonPoints}.";
+        if (points.Any(p => !IsValidLat(p.Lat) || !IsValidLon(p.Lon)))
+            return "The drawn area has points outside the map (latitude −90 to 90, longitude −180 to 180). Draw it again.";
+        if (Shape == AreaShape.Polygon && points is { Count: >= 3 } poly &&
             Geo.BoundingCircle(poly).RadiusNm > MaxQueryRadiusNm)
             return $"The drawn area is too large: it must fit within a {MaxQueryRadiusNm:0} nm radius. Draw a smaller shape.";
         return null;
     }
+
+    private static bool IsValidLat(double v) => double.IsFinite(v) && v is >= -90 and <= 90;
+    private static bool IsValidLon(double v) => double.IsFinite(v) && v is >= -180 and <= 180;
 
     public GeoPoint Center => new(CenterLat, CenterLon);
 

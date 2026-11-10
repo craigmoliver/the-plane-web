@@ -3,7 +3,8 @@ window.planeWebMap = (() => {
     let map, drawn, circle, centerMarker, dotnet, aircraftLayer;
 
     function emitPolygon(layer) {
-        const pts = layer.getLatLngs()[0].map(p => [+p.lat.toFixed(5), +p.lng.toFixed(5)]);
+        // wrap(): a shape drawn on a repeated copy of the world would otherwise have longitudes beyond ±180.
+        const pts = layer.getLatLngs()[0].map(p => p.wrap()).map(p => [+p.lat.toFixed(5), +p.lng.toFixed(5)]);
         dotnet.invokeMethodAsync('OnPolygonDrawn', JSON.stringify(pts));
     }
 
@@ -33,7 +34,8 @@ window.planeWebMap = (() => {
         map.on(L.Draw.Event.DELETED, () => dotnet.invokeMethodAsync('OnPolygonDrawn', '[]'));
         map.on('click', e => {
             if (map._fwDrawing) return;
-            dotnet.invokeMethodAsync('OnCenterPicked', +e.latlng.lat.toFixed(5), +e.latlng.lng.toFixed(5));
+            const p = e.latlng.wrap(); // clicks on a repeated copy of the world report longitudes beyond ±180
+            dotnet.invokeMethodAsync('OnCenterPicked', +p.lat.toFixed(5), +p.lng.toFixed(5));
         });
         map.on(L.Draw.Event.DRAWSTART, () => map._fwDrawing = true);
         map.on(L.Draw.Event.DRAWSTOP, () => setTimeout(() => map._fwDrawing = false, 50));

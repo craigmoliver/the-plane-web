@@ -128,6 +128,43 @@ public class ReviewRound2Tests
         Assert.NotNull(huge.Validate());
         Assert.Null(new WallSettings { Shape = AreaShape.Radius, PolygonJson = huge.PolygonJson }.Validate());
     }
+
+    [Theory]
+    [InlineData(91, 0)]
+    [InlineData(-90.5, 0)]
+    [InlineData(0, 180.1)]
+    [InlineData(0, -270)]
+    [InlineData(double.NaN, 0)]
+    public void Validate_RejectsCenterOutsideTheMap(double lat, double lon) =>
+        Assert.NotNull(new WallSettings { CenterLat = lat, CenterLon = lon }.Validate());
+
+    [Fact]
+    public void Validate_AcceptsCenterOnTheEdges() =>
+        Assert.Null(new WallSettings { CenterLat = -90, CenterLon = 180 }.Validate());
+
+    [Theory]
+    [InlineData(AreaShape.Polygon)]
+    [InlineData(AreaShape.Radius)] // a leftover polygon is stored too
+    public void Validate_RejectsPolygonPointsOutsideTheMap(AreaShape shape) =>
+        Assert.NotNull(new WallSettings { Shape = shape, PolygonJson = "[[47,-123],[47,-122],[48,238]]" }.Validate());
+
+    [Fact]
+    public void Validate_LimitsPolygonPoints()
+    {
+        // Tiny circles around the default center, so only the point count can fail.
+        static string Ring(int n) => "[" + string.Join(",", Enumerable.Range(0, n).Select(i =>
+            FormattableString.Invariant($"[{34.1 + 0.01 * Math.Sin(i * 2 * Math.PI / n)},{-84.5 + 0.01 * Math.Cos(i * 2 * Math.PI / n)}]"))) + "]";
+        Assert.Null(new WallSettings { Shape = AreaShape.Polygon, PolygonJson = Ring(WallSettings.MaxPolygonPoints) }.Validate());
+        Assert.NotNull(new WallSettings { Shape = AreaShape.Polygon, PolygonJson = Ring(WallSettings.MaxPolygonPoints + 1) }.Validate());
+    }
+
+    [Fact]
+    public async Task Save_RejectsInvalidCenter()
+    {
+        using var db = new TestDb();
+        var svc = new PlaneWeb.Infrastructure.Services.SettingsService(db);
+        await Assert.ThrowsAsync<ArgumentException>(() => svc.SaveAsync(new WallSettings { CenterLat = 120 }));
+    }
 }
 
 public class AirlineIcaoTests
