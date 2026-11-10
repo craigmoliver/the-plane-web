@@ -69,15 +69,14 @@ app.MapGet("/api/aircraft/{hex}", async (string hex, string? reg, string? callsi
     AircraftInfoService info, PlaneWeb.Core.IRouteLookup routes, PlaneWeb.Infrastructure.Services.PollerRegistry pollers,
     HttpContext ctx, CancellationToken ct) =>
 {
-    var details = await info.GetAsync(hex, string.IsNullOrWhiteSpace(reg) ? null : reg.Trim(), ct);
+    // Hints are only used when they match what the aircraft is broadcasting right now, so clients can't
+    // drive arbitrary outbound lookups (photo searches, routes) or flush the caches with made-up values.
+    var live = pollers.FindLive(hex);
+    var details = await info.GetAsync(hex, LiveHint(reg, live?.Registration), ct);
     if (details is null) return Results.BadRequest();
     PlaneWeb.Core.FlightRoute? route = null;
-    // Only look up routes for a callsign the aircraft is actually broadcasting right now,
-    // so clients can't drive arbitrary outbound lookups or grow the route cache.
-    var live = pollers.FindLive(hex);
-    if (!string.IsNullOrWhiteSpace(callsign) && live?.Callsign is { } liveCs &&
-        string.Equals(liveCs, callsign.Trim(), StringComparison.OrdinalIgnoreCase))
-        try { route = await routes.GetRouteAsync(callsign.Trim(), ct); } catch (HttpRequestException) { }
+    if (LiveHint(callsign, live?.Callsign) is { } cs)
+        try { route = await routes.GetRouteAsync(cs, ct); } catch (HttpRequestException) { }
     ctx.Response.Headers.CacheControl = "private, max-age=300";
     return Results.Ok(new
     {
@@ -94,4 +93,11 @@ app.MapRazorComponents<App>()
 
 app.Run();
 return 0;
-public partial class Program;
+
+public partial class Program
+{
+    /// <summary>The requested hint (trimmed) if it matches the live value, ignoring case; otherwise null.</summary>
+    public static string? LiveHint(string? requested, string? live) =>
+        !string.IsNullOrWhiteSpace(requested) && live is not null &&
+        string.Equals(requested.Trim(), live.Trim(), StringComparison.OrdinalIgnoreCase) ? requested.Trim() : null;
+}
