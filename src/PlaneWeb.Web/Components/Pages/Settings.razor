@@ -335,6 +335,13 @@
     [JSInvokable]
     public async Task OnPolygonDrawn(string json)
     {
+        // Callable by the client with anything; 200 points of [lat,lon] at 5 decimals fit well within this.
+        if (json is null || json.Length > 16_000)
+        {
+            validationError = $"The drawn area is too detailed; use at most {WallSettings.MaxPolygonPoints} points.";
+            StateHasChanged();
+            return;
+        }
         s!.PolygonJson = json;
         // Keep the selected shape in sync with what the poller will actually use.
         s.Shape = s.Polygon.Count >= 3 ? AreaShape.Polygon : AreaShape.Radius;
