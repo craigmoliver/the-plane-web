@@ -82,26 +82,41 @@ public sealed class FlightPollingService(
         var tracked = await Task.WhenAll(s.TrackedFlights.Take(WallSettings.MaxTracked).Select(async req =>
         {
             var cs = CallsignNormalizer.Normalize(req);
-            var result = await provider.GetByCallsignAsync(cs, ct);
+            ProviderResult result;
+            try
+            {
+                result = await provider.GetByCallsignAsync(cs, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // One failed lookup must not blank the other tracked flights; report it in the snapshot instead.
+                return (View: new TrackedFlightView(req, cs, null), Source: (string?)null, At: time.GetUtcNow(), Failure: ex);
+            }
             var at = time.GetUtcNow();
             var found = result.Aircraft
                 .Where(a => string.Equals(a.Callsign, cs, StringComparison.OrdinalIgnoreCase))
                 .OrderByDescending(a => a.Position.HasValue)
                 .FirstOrDefault();
-            if (found is null) return (View: new TrackedFlightView(req, cs, null), result.Source, At: at);
+            if (found is null) return (View: new TrackedFlightView(req, cs, null), Source: (string?)result.Source, At: at, Failure: (Exception?)null);
             found = found with { ObservedAt = at }; // each callsign is fetched independently
             var route = await routes.GetRouteAsync(cs, ct);
-            return (View: new TrackedFlightView(req, cs, FlightProcessor.Enrich(found, route, s.Center, now)), result.Source, At: at);
+            return (View: new TrackedFlightView(req, cs, FlightProcessor.Enrich(found, route, s.Center, now)), Source: (string?)result.Source, At: at, Failure: (Exception?)null);
         }));
+        // Nothing could be fetched at all: fail the poll so the poller keeps the last good data and shows its error.
+        if (tracked.Length > 0 && tracked.All(t => t.Failure is not null))
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(tracked[0].Failure!);
+        var ok = tracked.Where(t => t.Failure is null).ToList();
+        var failed = tracked.Where(t => t.Failure is not null).Select(t => t.View.Callsign).ToList();
         // Report every provider that contributed to this snapshot (fallback may differ per request).
-        var sources = tracked.Select(t => t.Source).Distinct().ToList();
+        var sources = ok.Select(t => t.Source).OfType<string>().Distinct().ToList();
         return new WallSnapshot
         {
-            // Earliest fetch time: conservative stamp for every position in this snapshot.
-            Mode = DisplayMode.Flights, UpdatedAt = tracked.Length == 0 ? time.GetUtcNow() : tracked.Min(t => t.At),
+            // Earliest successful fetch time: conservative stamp for every position in this snapshot.
+            Mode = DisplayMode.Flights, UpdatedAt = ok.Count == 0 ? time.GetUtcNow() : ok.Min(t => t.At),
             Source = sources.Count == 0 ? null : string.Join(" + ", sources),
             Tracked = tracked.Select(t => t.View).ToList(),
             MapAircraft = tracked.Select(t => t.View.Live?.Aircraft).OfType<Aircraft>().Where(a => a.Position.HasValue).ToList(),
+            Error = failed.Count == 0 ? null : $"Could not update {string.Join(", ", failed)}",
         };
     }
 }

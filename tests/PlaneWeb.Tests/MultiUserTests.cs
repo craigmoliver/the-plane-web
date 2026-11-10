@@ -335,6 +335,46 @@ public class PollerRegistryTests
         Assert.Equal([34.05, 34.10], trails.Get("bbb")!.Points.Select(p => p.Lat)); // not rejected as if fetched at t=0
     }
 
+    private sealed class FailsFor(params string[] failing) : IFlightDataProvider
+    {
+        public string Name => "partial";
+        public Task<ProviderResult> GetAircraftNearAsync(GeoPoint c, double r, CancellationToken ct) => throw new NotSupportedException();
+        public Task<ProviderResult> GetByCallsignAsync(string cs, CancellationToken ct) => failing.Contains(cs)
+            ? throw new InvalidOperationException("All flight data providers failed")
+            : Task.FromResult(new ProviderResult([new Aircraft { Hex = cs.ToLowerInvariant(), Callsign = cs, Lat = 34, Lon = -84.5, AltitudeFt = 9000 }], Name));
+    }
+
+    private static FlightPollingService PartialPoller(IFlightDataProvider provider)
+    {
+        var time = new ManualTime(DateTimeOffset.Parse("2026-10-04T12:00:00Z"));
+        var trails = new TrailStore();
+        var backfill = new TraceBackfillService(new AdsbLolTraceClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }),
+            trails, Options.Create(new PlaneWebOptions()), time, NullLogger<TraceBackfillService>.Instance);
+        return new FlightPollingService(provider, new NoRoutes(), trails, backfill, time);
+    }
+
+    [Fact]
+    public async Task TrackedFlights_OneFailedLookup_KeepsTheOthers()
+    {
+        var poller = PartialPoller(new FailsFor("BBB2"));
+        var snap = await poller.PollAsync(new WallSettings { Mode = DisplayMode.Flights, TrackedFlights = ["AAA1", "BBB2"] }, default);
+
+        Assert.Equal(["AAA1", "BBB2"], snap.Tracked.Select(t => t.Callsign));
+        Assert.NotNull(snap.Tracked[0].Live);
+        Assert.Null(snap.Tracked[1].Live);
+        Assert.Equal(["aaa1"], snap.MapAircraft.Select(a => a.Hex));
+        Assert.Equal("partial", snap.Source);
+        Assert.Contains("BBB2", snap.Error);
+    }
+
+    [Fact]
+    public async Task TrackedFlights_AllLookupsFailed_FailsThePoll()
+    {
+        var poller = PartialPoller(new FailsFor("AAA1", "BBB2"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            poller.PollAsync(new WallSettings { Mode = DisplayMode.Flights, TrackedFlights = ["AAA1", "BBB2"] }, default));
+    }
+
     [Fact]
     public void TrailLength_DoesNotSplitPollers()
     {
