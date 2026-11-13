@@ -16,13 +16,24 @@ public class LoginLockoutTests(AppFactory app) : IClassFixture<AppFactory>
     private sealed class CountingHasher : IPasswordHasher<AppUser>
     {
         private readonly PasswordHasher<AppUser> _inner = new();
-        public int Verifications;
-        public string HashPassword(AppUser user, string password) => _inner.HashPassword(user, password);
+        public int Verifications, Hashes;
+        public string HashPassword(AppUser user, string password)
+        {
+            Interlocked.Increment(ref Hashes);
+            return _inner.HashPassword(user, password);
+        }
         public PasswordVerificationResult VerifyHashedPassword(AppUser user, string hashedPassword, string providedPassword)
         {
             Interlocked.Increment(ref Verifications);
             return _inner.VerifyHashedPassword(user, hashedPassword, providedPassword);
         }
+    }
+
+    [Fact]
+    public void DummyHash_IsCreatedAtStartup()
+    {
+        _ = app.Services; // starts the host
+        Assert.True(app.Services.GetRequiredService<PlaneWeb.Web.DummyPasswordHash>().IsInitialized);
     }
 
     [Fact]
@@ -34,10 +45,12 @@ public class LoginLockoutTests(AppFactory app) : IClassFixture<AppFactory>
 
         async Task<(string Html, int Hashes)> Attempt(string email, string password)
         {
-            var before = hasher.Verifications;
+            var (verifiedBefore, hashedBefore) = (hasher.Verifications, hasher.Hashes);
             var r = await AuthTests.LoginAsync(c, email, password);
             Assert.Equal(HttpStatusCode.OK, r.StatusCode); // not signed in
-            return (await r.Content.ReadAsStringAsync(), hasher.Verifications - before);
+            // The dummy hash was made at startup: no attempt, not even the first, pays for creating a hash.
+            Assert.Equal(hashedBefore, hasher.Hashes);
+            return (await r.Content.ReadAsStringAsync(), hasher.Verifications - verifiedBefore);
         }
 
         var unknown = await Attempt("nobody@example.com", "whatever password");

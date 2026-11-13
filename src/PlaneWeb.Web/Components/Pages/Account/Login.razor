@@ -12,6 +12,7 @@
 @inject IOptions<AuthOptions> AuthOpts
 @inject NavigationManager Nav
 @inject Microsoft.AspNetCore.DataProtection.IDataProtectionProvider DataProtection
+@inject DummyPasswordHash DummyHash
 
 <PageTitle>Sign in · The Plane Web</PageTitle>
 
@@ -66,11 +67,6 @@
     // locked/disabled account. A separate "locked" message would confirm the email has an account.
     public const string FailedMessage = "Incorrect email or password, or the account is locked. Try again later or ask an admin.";
 
-    // Hash of a random password, checked whenever no real password check happens (no matching account, or a
-    // locked one, where Identity skips the check), so every failure takes about as long as a wrong password.
-    private static readonly Lazy<string> DummyHash = new(() =>
-        new PasswordHasher<AppUser>().HashPassword(new AppUser(), Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(24))));
-
     private async Task LoginAsync()
     {
         if (!AuthOpts.Value.LocalLogin) return;
@@ -78,7 +74,7 @@
         // Work accounts have no password; give the same message as a wrong password.
         if (user is null || user.IsExternal)
         {
-            Users.PasswordHasher.VerifyHashedPassword(user ?? new AppUser(), DummyHash.Value, Input.Password);
+            Users.PasswordHasher.VerifyHashedPassword(user ?? new AppUser(), DummyHash.Get(Users.PasswordHasher), Input.Password);
             Message = FailedMessage;
             return;
         }
@@ -86,7 +82,7 @@
         var wasLocked = await Users.IsLockedOutAsync(user);
         var r = await SignIn.PasswordSignInAsync(user, Input.Password, Input.Remember, lockoutOnFailure: true);
         if (wasLocked && !r.Succeeded)
-            Users.PasswordHasher.VerifyHashedPassword(user, DummyHash.Value, Input.Password);
+            Users.PasswordHasher.VerifyHashedPassword(user, DummyHash.Get(Users.PasswordHasher), Input.Password);
         if (r.Succeeded)
         {
             await Accounts.RecordSignInAsync(user);

@@ -100,6 +100,7 @@ public static class AuthSetup
         services.AddCascadingAuthenticationState();
         services.AddScoped<AuthenticationStateProvider, RevalidatingIdentityStateProvider>();
         services.AddScoped<AccountService>();
+        services.AddSingleton<DummyPasswordHash>();
 
         services.AddRateLimiter(o =>
         {
@@ -172,6 +173,9 @@ public static class AuthSetup
         await accounts.EnsureRolesAsync();
         var authOptions = scope.ServiceProvider.GetRequiredService<IOptions<AuthOptions>>().Value;
         await accounts.EnsureBootstrapAdminAsync(authOptions);
+        // Before any request: otherwise the first failed sign-in would also pay for creating it.
+        scope.ServiceProvider.GetRequiredService<DummyPasswordHash>()
+            .Initialize(scope.ServiceProvider.GetRequiredService<IPasswordHasher<AppUser>>());
         if (authOptions.Google.Enabled)
         {
             var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<PlaneWebDbContext>>();

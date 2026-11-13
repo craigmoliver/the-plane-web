@@ -26,6 +26,23 @@ public class LoginErrorTests(AppFactory app) : IClassFixture<AppFactory>
         Assert.Null(AuthSetup.ReadLoginError(dp, null));
     }
 
+    private sealed class FixedTime(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
+    }
+
+    [Theory]
+    [InlineData(4, true)]   // issued 4 minutes ago: still within the 5-minute lifetime
+    [InlineData(6, false)]  // issued 6 minutes ago: expired
+    public void ErrorToken_ExpiresAfterFiveMinutes(int minutesAgo, bool accepted)
+    {
+        var dp = new EphemeralDataProtectionProvider();
+        var issuedAt = new FixedTime(DateTimeOffset.UtcNow.AddMinutes(-minutesAgo));
+        var url = AuthSetup.LoginErrorUrl(dp, "Sign-in refused.", issuedAt);
+        var token = Uri.UnescapeDataString(url["/account/login?error=".Length..]);
+        Assert.Equal(accepted ? "Sign-in refused." : null, AuthSetup.ReadLoginError(dp, token));
+    }
+
     [Fact]
     public async Task CraftedErrorText_IsNotShown()
     {
