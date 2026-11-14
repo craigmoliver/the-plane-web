@@ -11,6 +11,9 @@
 @inject AccountService Accounts
 @inject IOptions<AuthOptions> AuthOpts
 @inject NavigationManager Nav
+@inject Microsoft.AspNetCore.DataProtection.IDataProtectionProvider DataProtection
+@inject DummyPasswordHash DummyHash
+@inject FailedSignInDelay FailureDelay
 
 <PageTitle>Sign in · The Plane Web</PageTitle>
 
@@ -57,27 +60,41 @@
     [SupplyParameterFromQuery(Name = "error")] private string? Error { get; set; }
     private string? Message;
 
-    protected override void OnInitialized() => Message ??= Error;
+    // Only messages this app issued (see AuthSetup.LoginErrorUrl) are shown; anything else in ?error= gets a generic one.
+    protected override void OnInitialized() =>
+        Message ??= Error is null ? null : AuthSetup.ReadLoginError(DataProtection, Error) ?? "Sign-in failed. Please try again.";
+
+    // Every failed local sign-in gets this one message: unknown email, work account, wrong password, or a
+    // locked/disabled account. A separate "locked" message would confirm the email has an account.
+    public const string FailedMessage = "Incorrect email or password, or the account is locked. Try again later or ask an admin.";
 
     private async Task LoginAsync()
     {
         if (!AuthOpts.Value.LocalLogin) return;
+        var started = FailureDelay.Start();
         var user = await Users.FindByNameAsync(Input.Email.Trim());
         // Work accounts have no password; give the same message as a wrong password.
         if (user is null || user.IsExternal)
         {
-            Message = "Incorrect email or password.";
+            Users.PasswordHasher.VerifyHashedPassword(user ?? new AppUser(), DummyHash.Get(Users.PasswordHasher), Input.Password);
+            await FailureDelay.WaitAsync(started);
+            Message = FailedMessage;
             return;
         }
+        // Identity returns LockedOut without checking the password when the account was already locked.
+        var wasLocked = await Users.IsLockedOutAsync(user);
         var r = await SignIn.PasswordSignInAsync(user, Input.Password, Input.Remember, lockoutOnFailure: true);
+        if (wasLocked && !r.Succeeded)
+            Users.PasswordHasher.VerifyHashedPassword(user, DummyHash.Get(Users.PasswordHasher), Input.Password);
         if (r.Succeeded)
         {
             await Accounts.RecordSignInAsync(user);
             Nav.NavigateTo(user.MustChangePassword ? "/account/change-password" : AuthSetup.SafeReturnUrl(ReturnUrl), forceLoad: true);
             return;
         }
-        Message = r.IsLockedOut ? "This account is locked or disabled. Try again later or ask an admin."
-            : "Incorrect email or password.";
+        // Covers what the hash checks can't: the failed-attempt count Identity just wrote to the database.
+        await FailureDelay.WaitAsync(started);
+        Message = FailedMessage;
     }
 
     private sealed class LoginInput

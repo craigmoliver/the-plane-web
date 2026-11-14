@@ -1,0 +1,124 @@
+using System.Net;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
+using PlaneWeb.Infrastructure.Data;
+using PlaneWeb.Web.Components.Pages.Account;
+
+namespace PlaneWeb.Tests;
+
+/// <summary>
+/// A failed sign-in must not reveal whether the email has an account: same message for unknown, wrong-password
+/// and locked accounts, and one password hash check each (Identity skips its own for locked accounts).
+/// </summary>
+/// <remarks>
+/// Each test gets its own <see cref="AppFactory"/> (and so its own database): the tests lock the bootstrap admin,
+/// and a shared fixture would make whichever runs second start with it already locked, skipping the unlocked
+/// path and the transition into lockout.
+/// </remarks>
+public class LoginLockoutTests
+{
+    private sealed class CountingHasher : IPasswordHasher<AppUser>
+    {
+        private readonly PasswordHasher<AppUser> _inner = new();
+        public int Verifications, Hashes;
+        public string HashPassword(AppUser user, string password)
+        {
+            Interlocked.Increment(ref Hashes);
+            return _inner.HashPassword(user, password);
+        }
+        public PasswordVerificationResult VerifyHashedPassword(AppUser user, string hashedPassword, string providedPassword)
+        {
+            Interlocked.Increment(ref Verifications);
+            return _inner.VerifyHashedPassword(user, hashedPassword, providedPassword);
+        }
+    }
+
+    private static async Task<bool> AdminLockedAsync(AppFactory app)
+    {
+        await using var scope = app.Services.CreateAsyncScope();
+        var users = scope.ServiceProvider.GetRequiredService<UserManager<AppUser>>();
+        return await users.IsLockedOutAsync((await users.FindByNameAsync(AppFactory.AdminEmail))!);
+    }
+
+    [Fact]
+    public async Task EveryFailurePath_TakesAtLeastTheMinimum()
+    {
+        using var app = new AppFactory();
+        // Lower bounds only (upper bounds would be flaky): unknown email, wrong password and locked account
+        // each wait out the minimum, so the failed-attempt write on real accounts can't be timed.
+        var minimum = TimeSpan.FromMilliseconds(300);
+        var c = app.WithWebHostBuilder(b => b.UseSetting(PlaneWeb.Web.FailedSignInDelay.ConfigKey, "300"))
+            .CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false, HandleCookies = true });
+
+        async Task<TimeSpan> Timed(string email, string password)
+        {
+            var page = await (await c.GetAsync("/account/login")).Content.ReadAsStringAsync();
+            var token = System.Text.RegularExpressions.Regex.Match(page, "name=\"__RequestVerificationToken\" value=\"([^\"]+)\"").Groups[1].Value;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var r = await c.PostAsync("/account/login", new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["__RequestVerificationToken"] = token, ["_handler"] = "login", ["Input.Email"] = email, ["Input.Password"] = password,
+            }));
+            Assert.Contains(Login.FailedMessage, await r.Content.ReadAsStringAsync());
+            return sw.Elapsed;
+        }
+
+        // Timers can fire a millisecond or two early; without the delay these paths take ~60 ms, so 50 ms of
+        // slack still catches a missing one.
+        void AtLeastMinimum(TimeSpan t, string path) =>
+            Assert.True(t >= minimum - TimeSpan.FromMilliseconds(50), $"{path}: {t.TotalMilliseconds:0} ms");
+        AtLeastMinimum(await Timed("nobody@example.com", "whatever password"), "unknown email");
+        Assert.False(await AdminLockedAsync(app)); // the wrong passwords below take the unlocked path
+        for (var i = 0; i < 5; i++) // the fifth also locks the account
+            AtLeastMinimum(await Timed(AppFactory.AdminEmail, $"wrong password {i}"), "wrong password");
+        Assert.True(await AdminLockedAsync(app));
+        AtLeastMinimum(await Timed(AppFactory.AdminEmail, AppFactory.AdminPassword), "locked account");
+    }
+
+    [Fact]
+    public void DummyHash_IsCreatedAtStartup()
+    {
+        using var app = new AppFactory();
+        _ = app.Services; // starts the host
+        Assert.True(app.Services.GetRequiredService<PlaneWeb.Web.DummyPasswordHash>().IsInitialized);
+    }
+
+    [Fact]
+    public async Task LockedAccount_LooksLikeAnUnknownEmail()
+    {
+        using var app = new AppFactory();
+        var hasher = new CountingHasher();
+        var c = app.WithWebHostBuilder(b => b.ConfigureServices(s => s.AddSingleton<IPasswordHasher<AppUser>>(hasher)))
+            .CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false, HandleCookies = true });
+
+        async Task<(string Html, int Hashes)> Attempt(string email, string password)
+        {
+            var (verifiedBefore, hashedBefore) = (hasher.Verifications, hasher.Hashes);
+            var r = await AuthTests.LoginAsync(c, email, password);
+            Assert.Equal(HttpStatusCode.OK, r.StatusCode); // not signed in
+            // The dummy hash was made at startup: no attempt, not even the first, pays for creating a hash.
+            Assert.Equal(hashedBefore, hasher.Hashes);
+            return (await r.Content.ReadAsStringAsync(), hasher.Verifications - verifiedBefore);
+        }
+
+        var unknown = await Attempt("nobody@example.com", "whatever password");
+        Assert.Contains(Login.FailedMessage, unknown.Html);
+        Assert.Equal(1, unknown.Hashes);
+
+        Assert.False(await AdminLockedAsync(app)); // the wrong passwords below take the unlocked path
+        for (var i = 0; i < 5; i++) // MaxFailedAccessAttempts
+        {
+            var wrong = await Attempt(AppFactory.AdminEmail, $"wrong password {i}");
+            Assert.Contains(Login.FailedMessage, wrong.Html);
+            Assert.Equal(1, wrong.Hashes);
+        }
+
+        Assert.True(await AdminLockedAsync(app));
+        // Now locked: even the right password fails, with the same message and the same hashing work.
+        var locked = await Attempt(AppFactory.AdminEmail, AppFactory.AdminPassword);
+        Assert.Contains(Login.FailedMessage, locked.Html);
+        Assert.DoesNotContain("locked or disabled", locked.Html);
+        Assert.Equal(1, locked.Hashes);
+    }
+}

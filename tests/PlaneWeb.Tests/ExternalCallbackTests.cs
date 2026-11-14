@@ -75,7 +75,8 @@ public class ExternalCallbackTests(AppFactory app) : IClassFixture<AppFactory>
         var c = Client();
         var r = await Callback(c, $"issued={issued}&sub=g-123&email={AllowedEmail}&email_verified=true", "&provider=Google");
         Assert.Equal(HttpStatusCode.Redirect, r.StatusCode);
-        Assert.StartsWith("/account/login?error=Sign-in refused", Location(r));
+        Assert.StartsWith("/account/login?error=", Location(r));
+        Assert.Contains("Sign-in refused.", await c.GetStringAsync(r.Headers.Location));
     }
 
     [Fact]
