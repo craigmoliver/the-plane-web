@@ -18,12 +18,13 @@ public sealed class PlaneWebOptions
 public sealed class FlightStateStore
 {
     private WallSnapshot _current = WallSnapshot.Empty;
-    public WallSnapshot Current => _current;
+    /// <summary>Written by the poller thread and read from UI threads, hence the volatile accesses.</summary>
+    public WallSnapshot Current => Volatile.Read(ref _current);
     public event Action<WallSnapshot>? Updated;
 
     public void Publish(WallSnapshot s)
     {
-        _current = s;
+        Volatile.Write(ref _current, s);
         Updated?.Invoke(s);
     }
 }
