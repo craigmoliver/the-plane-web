@@ -4,6 +4,7 @@
 @using System.Text.Json
 @inherits UserFeedComponent
 @inject IJSRuntime JS
+@inject ClientTime Clock
 @inject ICityGeocoder CityGeocoder
 
 <PageTitle>Settings · The Plane Web</PageTitle>
@@ -206,6 +207,15 @@
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        if (firstRender && !Clock.IsResolved)
+        {
+            await Clock.EnsureAsync();
+            // Navigated away during the lookup: don't touch the removed map element or create a JS reference.
+            if (IsDisposed) return;
+            UpdateSummary(Snapshot); // the summary was first built in the server's zone
+            StateHasChanged();
+        }
+
         if (pendingCityScroll)
         {
             pendingCityScroll = false;
@@ -385,7 +395,7 @@
         await SettingsSvc.SaveAsync(UserId, s);
         s = await SettingsSvc.GetAsync(UserId);
         await UpdateMap();
-        status = $"Saved at {DateTime.Now:T}";
+        status = $"Saved at {Clock.Format(DateTimeOffset.UtcNow, "T")}";
     }
 
     protected override async Task OnSnapshotAsync()
@@ -396,7 +406,7 @@
 
     private void UpdateSummary(WallSnapshot snap) =>
         liveSummary = snap.UpdatedAt == DateTimeOffset.MinValue ? "Waiting for live data…"
-            : $"{snap.AreaFlights.Count} aircraft in saved area · source {snap.Source} · {snap.UpdatedAt.ToLocalTime():T}";
+            : $"{snap.AreaFlights.Count} aircraft in saved area · source {snap.Source} · {Clock.Format(snap.UpdatedAt, "T")}";
 
     private async Task PushAircraft(WallSnapshot snap)
     {

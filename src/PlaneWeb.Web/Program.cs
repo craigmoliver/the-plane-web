@@ -25,6 +25,7 @@ builder.Services.AddRazorComponents()
 builder.Services.AddPlaneWeb(builder.Configuration);
 builder.AddPlaneWebAuth();
 builder.Services.AddHealthChecks();
+builder.Services.AddScoped<ClientTime>();
 // Persist data-protection keys (antiforgery/circuits) so restarts don't invalidate open pages.
 if (builder.Configuration["PlaneWeb:KeysDir"] is { Length: > 0 } keysDir)
     builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(keysDir));

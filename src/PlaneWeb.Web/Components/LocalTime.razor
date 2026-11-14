@@ -1,0 +1,16 @@
+@* Shows a time in the viewer's time zone (the server's until the browser has reported its zone). *@
+@inject ClientTime Clock
+@Clock.Format(Value, Format)
+
+@code {
+    [Parameter, EditorRequired] public DateTimeOffset Value { get; set; }
+    [Parameter] public string Format { get; set; } = "g";
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // First rendered in the server's zone: re-render once the browser's zone is known.
+        if (!firstRender || Clock.IsResolved) return;
+        await Clock.EnsureAsync();
+        StateHasChanged();
+    }
+}

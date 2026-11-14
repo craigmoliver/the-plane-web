@@ -46,7 +46,7 @@
                     <tr @key="r.Id">
                         <td>@r.Email</td>
                         <td>@(r.IsAdmin ? "Admin" : "User")</td>
-                        <td>@r.AddedAt.ToLocalTime().ToString("g")@(r.AddedBy is null ? "" : $" ({r.AddedBy})")</td>
+                        <td><LocalTime Value="r.AddedAt" />@(r.AddedBy is null ? "" : $" ({r.AddedBy})")</td>
                         <td><div class="actions">
                             <button class="btn small" @onclick="() => ToggleAdminAsync(r)">@(r.IsAdmin ? "Unmark admin" : "Make admin")</button>
                             <button class="btn small danger" @onclick="() => RemoveAsync(r)">Remove</button>
