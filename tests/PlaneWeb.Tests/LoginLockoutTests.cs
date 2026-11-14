@@ -30,6 +30,38 @@ public class LoginLockoutTests(AppFactory app) : IClassFixture<AppFactory>
     }
 
     [Fact]
+    public async Task EveryFailurePath_TakesAtLeastTheMinimum()
+    {
+        // Lower bounds only (upper bounds would be flaky): unknown email, wrong password and locked account
+        // each wait out the minimum, so the failed-attempt write on real accounts can't be timed.
+        var minimum = TimeSpan.FromMilliseconds(300);
+        var c = app.WithWebHostBuilder(b => b.UseSetting(PlaneWeb.Web.FailedSignInDelay.ConfigKey, "300"))
+            .CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false, HandleCookies = true });
+
+        async Task<TimeSpan> Timed(string email, string password)
+        {
+            var page = await (await c.GetAsync("/account/login")).Content.ReadAsStringAsync();
+            var token = System.Text.RegularExpressions.Regex.Match(page, "name=\"__RequestVerificationToken\" value=\"([^\"]+)\"").Groups[1].Value;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var r = await c.PostAsync("/account/login", new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["__RequestVerificationToken"] = token, ["_handler"] = "login", ["Input.Email"] = email, ["Input.Password"] = password,
+            }));
+            Assert.Contains(Login.FailedMessage, await r.Content.ReadAsStringAsync());
+            return sw.Elapsed;
+        }
+
+        // Timers can fire a millisecond or two early; without the delay these paths take ~60 ms, so 50 ms of
+        // slack still catches a missing one.
+        void AtLeastMinimum(TimeSpan t, string path) =>
+            Assert.True(t >= minimum - TimeSpan.FromMilliseconds(50), $"{path}: {t.TotalMilliseconds:0} ms");
+        AtLeastMinimum(await Timed("nobody@example.com", "whatever password"), "unknown email");
+        for (var i = 0; i < 5; i++) // the fifth also locks the account
+            AtLeastMinimum(await Timed(AppFactory.AdminEmail, $"wrong password {i}"), "wrong password");
+        AtLeastMinimum(await Timed(AppFactory.AdminEmail, AppFactory.AdminPassword), "locked account");
+    }
+
+    [Fact]
     public void DummyHash_IsCreatedAtStartup()
     {
         _ = app.Services; // starts the host

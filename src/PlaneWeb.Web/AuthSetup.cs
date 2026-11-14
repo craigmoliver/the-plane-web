@@ -101,6 +101,7 @@ public static class AuthSetup
         services.AddScoped<AuthenticationStateProvider, RevalidatingIdentityStateProvider>();
         services.AddScoped<AccountService>();
         services.AddSingleton<DummyPasswordHash>();
+        services.AddSingleton<FailedSignInDelay>();
 
         services.AddRateLimiter(o =>
         {
