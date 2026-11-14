@@ -22,6 +22,7 @@ public sealed class AppFactory : WebApplicationFactory<Program>
         b.UseSetting("PlaneWeb:Auth:AdminEmail", AdminEmail);
         b.UseSetting("PlaneWeb:Auth:AdminPassword", AdminPassword);
         b.UseSetting("PlaneWeb:Auth:RevalidateSeconds", "0"); // check sessions on every request
+        b.UseSetting(PlaneWeb.Web.FailedSignInDelay.ConfigKey, "50"); // keep the many failed sign-ins in tests quick
         // Unroutable feeds: polls fail fast instead of calling real services.
         foreach (var k in new[] { "AdsbLolBaseUrl", "AdsbFiBaseUrl", "RoutesBaseUrl", "TraceBaseUrl", "AdsbdbBaseUrl", "PlanespottersBaseUrl", "LogoBaseUrl" })
             b.UseSetting($"PlaneWeb:{k}", "http://127.0.0.1:9/");

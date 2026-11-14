@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Authentication.Google;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Components.Server;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -99,6 +100,8 @@ public static class AuthSetup
         services.AddCascadingAuthenticationState();
         services.AddScoped<AuthenticationStateProvider, RevalidatingIdentityStateProvider>();
         services.AddScoped<AccountService>();
+        services.AddSingleton<DummyPasswordHash>();
+        services.AddSingleton<FailedSignInDelay>();
 
         services.AddRateLimiter(o =>
         {
@@ -171,6 +174,9 @@ public static class AuthSetup
         await accounts.EnsureRolesAsync();
         var authOptions = scope.ServiceProvider.GetRequiredService<IOptions<AuthOptions>>().Value;
         await accounts.EnsureBootstrapAdminAsync(authOptions);
+        // Before any request: otherwise the first failed sign-in would also pay for creating it.
+        scope.ServiceProvider.GetRequiredService<DummyPasswordHash>()
+            .Initialize(scope.ServiceProvider.GetRequiredService<IPasswordHasher<AppUser>>());
         if (authOptions.Google.Enabled)
         {
             var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<PlaneWebDbContext>>();
@@ -214,36 +220,57 @@ public static class AuthSetup
         }).AllowAnonymous().RequireRateLimiting(LoginRateLimit);
 
         account.MapGet("/external-callback", async (HttpContext ctx, string? returnUrl, AccountService accounts,
-            SignInManager<AppUser> signIn, IOptions<AuthOptions> opt, IDbContextFactory<PlaneWebDbContext> dbFactory) =>
+            SignInManager<AppUser> signIn, IOptions<AuthOptions> opt, IDbContextFactory<PlaneWebDbContext> dbFactory,
+            IDataProtectionProvider dp, TimeProvider time) =>
         {
+            IResult Fail(string message) => Results.LocalRedirect(LoginErrorUrl(dp, message, time));
             var result = await ctx.AuthenticateAsync(IdentityConstants.ExternalScheme);
             await ctx.SignOutAsync(IdentityConstants.ExternalScheme);
-            if (!result.Succeeded) return Results.LocalRedirect("/account/login?error=" + Uri.EscapeDataString("Sign-in failed."));
+            if (!result.Succeeded) return Fail("Sign-in failed.");
             // Which provider signed this user in comes from the protected external ticket, never from the
             // query string, so a Google sign-in can't be fed to the Microsoft code path or vice versa.
             if (IssuingProvider(result.Properties, opt.Value) is not { } provider)
-                return Results.LocalRedirect("/account/login?error=" + Uri.EscapeDataString("Sign-in refused."));
+                return Fail("Sign-in refused.");
 
             AppUser? user; string? error;
             if (provider == AccountService.EntraProvider)
             {
                 if (ExternalIdentity.FromPrincipal(result.Principal) is not { } id)
-                    return Results.LocalRedirect("/account/login?error=" + Uri.EscapeDataString("Microsoft sign-in failed."));
+                    return Fail("Microsoft sign-in failed.");
                 (user, error) = await accounts.ProvisionExternalAsync(id, opt.Value.Entra);
             }
             else
             {
                 if (GoogleIdentity.FromPrincipal(result.Principal) is not { } id)
-                    return Results.LocalRedirect("/account/login?error=" + Uri.EscapeDataString("Google sign-in failed."));
+                    return Fail("Google sign-in failed.");
                 await using var db = await dbFactory.CreateDbContextAsync();
                 (user, error) = await accounts.ProvisionGoogleAsync(id, db);
             }
             if (user is null)
-                return Results.LocalRedirect("/account/login?error=" + Uri.EscapeDataString(error ?? "Sign-in refused."));
+                return Fail(error ?? "Sign-in refused.");
             await signIn.SignInAsync(user, isPersistent: true);
             await accounts.RecordSignInAsync(user);
             return Results.LocalRedirect(SafeReturnUrl(returnUrl));
         }).AllowAnonymous().RequireRateLimiting(LoginRateLimit);
+    }
+
+    private const string LoginErrorPurpose = "PlaneWeb.LoginError";
+    private static readonly TimeSpan LoginErrorLifetime = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// The login page URL showing <paramref name="message"/>. The message travels encrypted and signed, so a
+    /// crafted link can't make the sign-in page display text of someone else's choosing.
+    /// </summary>
+    public static string LoginErrorUrl(IDataProtectionProvider dp, string message, TimeProvider time) =>
+        "/account/login?error=" + Uri.EscapeDataString(dp.CreateProtector(LoginErrorPurpose).ToTimeLimitedDataProtector()
+            .Protect(message, time.GetUtcNow() + LoginErrorLifetime));
+
+    /// <summary>The message from <see cref="LoginErrorUrl"/>; null if the token is missing, tampered with or expired.</summary>
+    public static string? ReadLoginError(IDataProtectionProvider dp, string? token)
+    {
+        if (string.IsNullOrEmpty(token)) return null;
+        try { return dp.CreateProtector(LoginErrorPurpose).ToTimeLimitedDataProtector().Unprotect(token); }
+        catch (System.Security.Cryptography.CryptographicException) { return null; }
     }
 
     /// <summary>Key under which the challenge records its provider; the same one ASP.NET Core Identity uses.</summary>

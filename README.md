@@ -57,6 +57,7 @@ Settings are stored in SQLite at `/data/planeweb.db` and flight trails in `/data
 | `PlaneWeb__Postgres__Host` / `__Port` / `__Database` / `__Username` / `__Password` | – | Postgres settings (alternative to a connection string; passwords needn't be escaped) |
 | `PlaneWeb__Auth__AdminEmail` / `__AdminPassword` | – | first admin, created if missing |
 | `PlaneWeb__Auth__LocalLogin` | `true` | allow email/password accounts |
+| `PlaneWeb__Auth__FailedSignInMinMs` | `1000` | every failed email/password sign-in takes at least this long, so response times don't reveal which emails have accounts; a warning is logged if one takes longer |
 | `PlaneWeb__Auth__Entra__TenantId` / `__ClientId` / `__ClientSecret` | – | Microsoft sign-in; see docs/entra.md |
 | `PlaneWeb__TrustForwardedHeaders` | `false` | `true` behind a reverse proxy |
 | `PlaneWeb__TrustedProxyNetworks` | private ranges | comma-separated CIDRs allowed to send X-Forwarded-*; keep the app's own port unreachable except via the proxy |
