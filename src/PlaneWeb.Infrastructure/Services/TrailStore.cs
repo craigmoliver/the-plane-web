@@ -69,7 +69,11 @@ public sealed class TrailStore
         lock (_lock)
         {
             if (!_trails.TryGetValue(hex, out var trail)) return; // aircraft already gone
-            var merged = trail.Points.Concat(incoming).OrderBy(p => p.T).ToList();
+            // History is only what came before the newest live sighting. A trace fetched later can hold newer
+            // samples; keeping them would make Record skip live positions until the clock caught up.
+            var older = incoming.Where(p => p.T <= trail.LastSeen).ToList();
+            if (older.Count == 0) return;
+            var merged = trail.Points.Concat(older).OrderBy(p => p.T).ToList();
             trail.Points.Clear();
             foreach (var p in merged)
             {

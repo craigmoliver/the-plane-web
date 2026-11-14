@@ -115,6 +115,20 @@ public class TrailStoreTests
     }
 
     [Fact]
+    public void Merge_IgnoresTracePointsNewerThanTheLastLiveSighting()
+    {
+        var s = new TrailStore();
+        var t = T0.ToUnixTimeSeconds();
+        s.Record(Ac("a", 34.5, -84), T0);
+        // The trace was fetched a little later and already holds a newer sample.
+        s.Merge("a", [new TrailPoint(t - 60, 34.3, -84, 9500), new TrailPoint(t + 20, 34.7, -84, 10500)], T0.AddSeconds(25));
+        Assert.Equal([34.3, 34.5], s.Get("a")!.Points.Select(p => p.Lat));
+
+        s.Record(Ac("a", 34.6, -84), T0.AddSeconds(10)); // the next live position is still recorded
+        Assert.Equal([34.3, 34.5, 34.6], s.Get("a")!.Points.Select(p => p.Lat));
+    }
+
+    [Fact]
     public async Task ConcurrentSaves_ToSameFile_DoNotCollide()
     {
         // Two replicas (old and new revision) saving the same /data/trails.json at once.

@@ -147,8 +147,9 @@ public sealed class PollerRegistry(
             catch (Exception ex)
             {
                 log.LogWarning(ex, "Poll failed");
-                // Keep the last successful UpdatedAt so stale data is not presented as fresh.
-                p.Store.Publish(p.Store.Current with { Error = $"Live data unavailable (last attempt {time.GetUtcNow().ToLocalTime():HH:mm:ss})" });
+                // Keep the last successful UpdatedAt so stale data is not presented as fresh; pages show that time
+                // in each viewer's own zone, so the shared message carries none.
+                p.Store.Publish(p.Store.Current with { Error = "Live data unavailable, retrying" });
             }
             try { await Task.Delay(TimeSpan.FromSeconds(Math.Max(2, options.Value.PollSeconds)), time, ct); }
             catch (OperationCanceledException) { break; }
