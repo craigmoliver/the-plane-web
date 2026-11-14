@@ -11,7 +11,12 @@ namespace PlaneWeb.Tests;
 /// A failed sign-in must not reveal whether the email has an account: same message for unknown, wrong-password
 /// and locked accounts, and one password hash check each (Identity skips its own for locked accounts).
 /// </summary>
-public class LoginLockoutTests(AppFactory app) : IClassFixture<AppFactory>
+/// <remarks>
+/// Each test gets its own <see cref="AppFactory"/> (and so its own database): the tests lock the bootstrap admin,
+/// and a shared fixture would make whichever runs second start with it already locked, skipping the unlocked
+/// path and the transition into lockout.
+/// </remarks>
+public class LoginLockoutTests
 {
     private sealed class CountingHasher : IPasswordHasher<AppUser>
     {
@@ -29,9 +34,17 @@ public class LoginLockoutTests(AppFactory app) : IClassFixture<AppFactory>
         }
     }
 
+    private static async Task<bool> AdminLockedAsync(AppFactory app)
+    {
+        await using var scope = app.Services.CreateAsyncScope();
+        var users = scope.ServiceProvider.GetRequiredService<UserManager<AppUser>>();
+        return await users.IsLockedOutAsync((await users.FindByNameAsync(AppFactory.AdminEmail))!);
+    }
+
     [Fact]
     public async Task EveryFailurePath_TakesAtLeastTheMinimum()
     {
+        using var app = new AppFactory();
         // Lower bounds only (upper bounds would be flaky): unknown email, wrong password and locked account
         // each wait out the minimum, so the failed-attempt write on real accounts can't be timed.
         var minimum = TimeSpan.FromMilliseconds(300);
@@ -56,14 +69,17 @@ public class LoginLockoutTests(AppFactory app) : IClassFixture<AppFactory>
         void AtLeastMinimum(TimeSpan t, string path) =>
             Assert.True(t >= minimum - TimeSpan.FromMilliseconds(50), $"{path}: {t.TotalMilliseconds:0} ms");
         AtLeastMinimum(await Timed("nobody@example.com", "whatever password"), "unknown email");
+        Assert.False(await AdminLockedAsync(app)); // the wrong passwords below take the unlocked path
         for (var i = 0; i < 5; i++) // the fifth also locks the account
             AtLeastMinimum(await Timed(AppFactory.AdminEmail, $"wrong password {i}"), "wrong password");
+        Assert.True(await AdminLockedAsync(app));
         AtLeastMinimum(await Timed(AppFactory.AdminEmail, AppFactory.AdminPassword), "locked account");
     }
 
     [Fact]
     public void DummyHash_IsCreatedAtStartup()
     {
+        using var app = new AppFactory();
         _ = app.Services; // starts the host
         Assert.True(app.Services.GetRequiredService<PlaneWeb.Web.DummyPasswordHash>().IsInitialized);
     }
@@ -71,6 +87,7 @@ public class LoginLockoutTests(AppFactory app) : IClassFixture<AppFactory>
     [Fact]
     public async Task LockedAccount_LooksLikeAnUnknownEmail()
     {
+        using var app = new AppFactory();
         var hasher = new CountingHasher();
         var c = app.WithWebHostBuilder(b => b.ConfigureServices(s => s.AddSingleton<IPasswordHasher<AppUser>>(hasher)))
             .CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false, HandleCookies = true });
@@ -89,6 +106,7 @@ public class LoginLockoutTests(AppFactory app) : IClassFixture<AppFactory>
         Assert.Contains(Login.FailedMessage, unknown.Html);
         Assert.Equal(1, unknown.Hashes);
 
+        Assert.False(await AdminLockedAsync(app)); // the wrong passwords below take the unlocked path
         for (var i = 0; i < 5; i++) // MaxFailedAccessAttempts
         {
             var wrong = await Attempt(AppFactory.AdminEmail, $"wrong password {i}");
@@ -96,6 +114,7 @@ public class LoginLockoutTests(AppFactory app) : IClassFixture<AppFactory>
             Assert.Equal(1, wrong.Hashes);
         }
 
+        Assert.True(await AdminLockedAsync(app));
         // Now locked: even the right password fails, with the same message and the same hashing work.
         var locked = await Attempt(AppFactory.AdminEmail, AppFactory.AdminPassword);
         Assert.Contains(Login.FailedMessage, locked.Html);
